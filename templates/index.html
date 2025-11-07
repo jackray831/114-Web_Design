@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>FastAPI 聊天室</title>
+        <style>
+            body { font-family: sans-serif; display: grid; place-items: center; min-height: 90vh; margin: 0; }
+            h1, h2, h3 { margin-top: 0; }
+            ul { list-style-type: none; margin: 0; padding: 0; }
+
+            /* 登入表單 */
+            #login-form { display: block; }
+
+            /* 聊天室主介面 */
+            #chat-ui { display: none; /* 預設隱藏 */ width: 600px; border: 1px solid #ccc; padding: 16px; }
+            #chat-container { display: flex; flex-direction: row; gap: 16px; }
+
+            /* 左側聊天區 */
+            #chat-area { flex-grow: 1; display: flex; flex-direction: column; }
+            #messages { overflow-y: scroll; height: 350px; border: 1px solid #ddd; margin-bottom: 10px; padding: 8px; }
+            #messages li { padding: 4px 0; }
+            #messages li.system { font-style: italic; color: #777; }
+            #chatForm { display: flex; }
+            #messageText { flex-grow: 1; }
+
+            /* 右側成員列表 */
+            #member-area {
+                width: 150px;
+                border-left: 1px solid #ddd;
+                padding-left: 16px;
+            }
+            #member-list li { padding: 4px; }
+        </style>
+    </head>
+    <body>
+        
+        <div id="login-form">
+            <h2>加入聊天室</h2>
+            <form onsubmit="connectToChat(event)">
+                <input type="text" id="nickname" placeholder="請輸入你的暱稱" autocomplete="off" required/>
+                <button typeNext="submit">加入</button>
+            </form>
+        </div>
+
+        <div id="chat-ui">
+            <h1>FastAPI 聊天室 (你的暱稱: <b id="ws-nickname"></b>)</h1>
+            
+            <div id="chat-container">
+                <div id="chat-area">
+                    <h3>聊天</h3>
+                    <ul id='messages'></ul>
+                    <form action="" onsubmit="sendMessage(event)" id="chatForm">
+                        <input type="text" id="messageText" autocomplete="off" placeholder="輸入訊息..."/>
+                        <button>傳送</button>
+                    </form>
+                </div>
+
+                <div id="member-area">
+                    <h3>成員列表</h3>
+                    <ul id="member-list">
+                        </ul>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            var ws; // 保持 ws 在全域
+
+            // --- 登入與連線 (基本不變) ---
+            function connectToChat(event) {
+                event.preventDefault();
+                var nickname = document.getElementById("nickname").value.trim();
+                if (nickname === "") return;
+
+                document.querySelector("#ws-nickname").textContent = nickname;
+                var ws_url = `ws://localhost:8000/ws?nickname=${encodeURIComponent(nickname)}`;
+                ws = new WebSocket(ws_url);
+
+                // **** 核心變動：重寫 onmessage ****
+                ws.onmessage = function(event) {
+                    // 解析從伺服器收到的 JSON 字串
+                    var data = JSON.parse(event.data);
+
+                    // 根據訊息類型執行不同動作
+                    switch (data.type) {
+                        case 'chat':
+                            addChatMessage(data.nickname, data.message);
+                            break;
+                        case 'system':
+                            addSystemMessage(data.message);
+                            break;
+                        case 'member_list_update':
+                            updateMemberList(data.members);
+                            break;
+                    }
+                };
+
+                ws.onopen = function(event) {
+                    document.getElementById("login-form").style.display = "none";
+                    document.getElementById("chat-ui").style.display = "block";
+                };
+
+                ws.onclose = function(event) {
+                    addSystemMessage("你已斷線。請重新整理頁面。");
+                };
+            }
+
+            // --- 傳送訊息 (不變) ---
+            function sendMessage(event) {
+                event.preventDefault();
+                var input = document.getElementById("messageText");
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(input.value); // 後端會負責包裝成 JSON
+                    input.value = '';
+                }
+            }
+
+            // --- 新增的輔助函式 ---
+
+            const messagesList = document.getElementById('messages');
+
+            // 輔助函式：新增「聊天訊息」到列表
+            function addChatMessage(nickname, message) {
+                var item = document.createElement('li');
+                item.innerHTML = `<b>${nickname}:</b> ${message}`; // 暱稱加粗
+                messagesList.appendChild(item);
+                messagesList.scrollTop = messagesList.scrollHeight; // 自動滾動
+            }
+
+            // 輔助函式：新增「系統訊息」到列表
+            function addSystemMessage(message) {
+                var item = document.createElement('li');
+                item.className = 'system'; // 套用 system 樣式
+                item.textContent = message;
+                messagesList.appendChild(item);
+                messagesList.scrollTop = messagesList.scrollHeight;
+            }
+
+            // 輔助函式：更新「成員列表」
+            function updateMemberList(members) {
+                var listEl = document.getElementById("member-list");
+                listEl.innerHTML = ''; // 清空舊列表
+
+                members.forEach(function(member) {
+                    var item = document.createElement('li');
+                    item.textContent = member;
+                    listEl.appendChild(item);
+                });
+            }
+        </script>
+    </body>
+</html>
