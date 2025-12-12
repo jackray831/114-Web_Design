@@ -1,14 +1,20 @@
 # main.py
 import uvicorn
 import json  # 導入 json 模組
-from fastapi import FastAPI, WebSocket, Request, WebSocketDisconnect, Query
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, List # 導入 List
 
 # ... (FastAPI 和 Jinja2 實例化) ...
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
-
+# --- CORS 設定 ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 在開發階段，允許所有來源連線 (生產環境建議指定特定網域)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ConnectionManager:
     """管理 WebSocket 連線的類別"""
@@ -42,13 +48,6 @@ class ConnectionManager:
 # 實例化連線管理器
 manager = ConnectionManager()
 
-
-# --- HTTP 路由 (用來提供前端頁面) ---
-@app.get("/")
-async def get(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-
 # --- WebSocket 路由 (聊天室核心) ---
 
 @app.websocket("/ws")
@@ -57,36 +56,21 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
     # 接受新連線
     await manager.connect(websocket, nickname)
     
-    # 1. 廣播「加入」的系統訊息
-    join_message = {"type": "system", "message": f"{nickname} 加入了聊天室"}
-    await manager.broadcast(join_message)
-    
-    # 2. 廣播「更新成員列表」指令
-    member_list = manager.get_member_list()
-    update_list_message = {"type": "member_list_update", "members": member_list}
-    await manager.broadcast(update_list_message)
+    # 廣播加入訊息
+    await manager.broadcast({"type": "system", "message": f"{nickname} 加入了聊天室"})
+    await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
     
     try:
-        # 保持迴圈，監聽來自客戶端的訊息
         while True:
             data = await websocket.receive_text()
-            
-            # 廣播「聊天」訊息
-            chat_message = {"type": "chat", "nickname": nickname, "message": data}
-            await manager.broadcast(chat_message)
+            # 廣播聊天訊息
+            await manager.broadcast({"type": "chat", "nickname": nickname, "message": data})
             
     except WebSocketDisconnect:
-        # 處理斷線
         nickname_left = manager.disconnect(websocket)
-        
-        # 1. 廣播「離開」的系統訊息
-        leave_message = {"type": "system", "message": f"{nickname_left} 離開了聊天室"}
-        await manager.broadcast(leave_message)
-        
-        # 2. 廣播「更新成員列表」指令
-        member_list = manager.get_member_list()
-        update_list_message = {"type": "member_list_update", "members": member_list}
-        await manager.broadcast(update_list_message)
+        # 廣播離開訊息
+        await manager.broadcast({"type": "system", "message": f"{nickname_left} 離開了聊天室"})
+        await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
 
 # 允許在 Python 腳本中直接執行
 if __name__ == "__main__":
