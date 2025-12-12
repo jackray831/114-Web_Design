@@ -26,11 +26,14 @@
             <li 
               v-for="(msg, index) in messages" 
               :key="index"
-              :class="{ 'system-msg': msg.type === 'system' }"
+              :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === nickname }"
             >
-              <span v-if="msg.type === 'chat'">
-                <strong>{{ msg.nickname }}:</strong> {{ msg.message }}
-              </span>
+              <div v-if="msg.type === 'chat'" class="msg-content">
+                <span class="msg-sender">{{ msg.nickname }}</span>
+                <span class="msg-text">{{ msg.message }}</span>
+                <span class="msg-time">{{ msg.time }}</span>
+              </div>
+              
               <span v-else>
                 {{ msg.message }}
               </span>
@@ -64,63 +67,59 @@
 <script setup>
 import { ref, nextTick, onBeforeUnmount } from 'vue'
 
-// --- 狀態變數 (State) ---
 const nickname = ref('')
 const inputMessage = ref('')
 const isJoined = ref(false)
-const messages = ref([]) // 儲存聊天紀錄
-const members = ref([])  // 儲存成員列表
-const messagesContainer = ref(null) // 用來控制滾動條的 DOM 元素
+const messages = ref([])
+const members = ref([]) 
+const messagesContainer = ref(null)
 
-// WebSocket 實例
 let ws = null
 
-// --- 功能邏輯 ---
-
-// 1. 加入聊天室
 const joinChat = () => {
   if (!nickname.value.trim()) return
 
-  // 連線到 FastAPI 後端
-  // 注意：這裡直接連到後端的 IP:PORT
   ws = new WebSocket(`ws://127.0.0.1:8000/ws?nickname=${encodeURIComponent(nickname.value)}`)
 
   ws.onopen = () => {
-    console.log('已連線')
     isJoined.value = true
   }
 
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data)
-    handleMessage(data)
+    
+    if (data.type === 'history') {
+      // 處理歷史訊息：將收到的歷史陣列設為目前的訊息
+      messages.value = data.messages
+      scrollToBottom()
+    } 
+    else if (data.type === 'chat' || data.type === 'system') {
+      messages.value.push(data)
+      scrollToBottom()
+    } 
+    else if (data.type === 'member_list_update') {
+      members.value = data.members
+    }
   }
 
-  ws.onclose = () => {
-    alert('連線已中斷')
+  // 處理錯誤與斷線
+  ws.onclose = (event) => {
     isJoined.value = false
     messages.value = []
     members.value = []
-  }
-  
-  ws.onerror = (err) => {
-    console.error('WebSocket Error:', err)
-  }
-}
-
-// 2. 處理接收到的訊息
-const handleMessage = (data) => {
-  if (data.type === 'chat' || data.type === 'system') {
-    // 新增訊息到列表
-    messages.value.push(data)
-    // 收到新訊息後，自動滾動到底部
-    scrollToBottom()
-  } else if (data.type === 'member_list_update') {
-    // 更新成員列表
-    members.value = data.members
+    
+    // 檢查錯誤代碼 4003 (暱稱重複)
+    if (event.code === 4003) {
+      alert("這個暱稱已經有人使用了，請換一個！")
+    } else {
+      // 只有非正常關閉才跳出斷線提示
+      if (event.code !== 1000 && event.code !== 1005) {
+        alert("連線已中斷")
+      }
+    }
   }
 }
 
-// 3. 傳送訊息
 const sendMessage = () => {
   if (ws && ws.readyState === WebSocket.OPEN && inputMessage.value.trim()) {
     ws.send(inputMessage.value)
@@ -128,143 +127,50 @@ const sendMessage = () => {
   }
 }
 
-// 4. 自動滾動到底部 (UX 優化)
 const scrollToBottom = async () => {
-  // 使用 nextTick 確保 DOM 已經更新完畢後才執行滾動
   await nextTick()
   if (messagesContainer.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
   }
 }
 
-// 5. 元件銷毀前關閉連線
 onBeforeUnmount(() => {
   if (ws) ws.close()
 })
 </script>
 
 <style scoped>
-/* 簡單的 CSS 美化，類似之前的風格 */
-.container {
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 20px;
-  display: flex;
-  justify-content: center;
-  min-height: 90vh;
-  align-items: center;
-}
+/* 樣式部分，新增了時間和訊息排版 */
+.container { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; display: flex; justify-content: center; min-height: 90vh; align-items: center; }
+.login-box { background: #f9f9f9; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; }
+.chat-ui { width: 100%; background: white; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+.header { background: #4ade80; color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
+.main-area { display: flex; height: 500px; }
+.chat-area { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #e0e0e0; }
 
-.login-box {
-  background: #f9f9f9;
-  padding: 40px;
-  border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-  text-align: center;
-}
+.messages-list { flex: 1; list-style: none; padding: 15px; margin: 0; overflow-y: auto; background: #f1f5f9; }
 
-.chat-ui {
-  width: 100%;
-  background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
+/* 訊息樣式優化 */
+.messages-list li { margin-bottom: 10px; padding: 8px 12px; border-radius: 8px; max-width: 80%; width: fit-content; }
 
-.header {
-  background: #4ade80; /* Nuxt Green */
-  color: white;
-  padding: 15px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+/* 別人的訊息 (靠左) */
+.messages-list li:not(.system-msg):not(.my-msg) { background: white; border: 1px solid #ddd; }
 
-.main-area {
-  display: flex;
-  height: 400px;
-}
+/* 我的訊息 (靠右，綠色) */
+.messages-list li.my-msg { align-self: flex-end; background: #dcfce7; border: 1px solid #bbf7d0; margin-left: auto; }
 
-.chat-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid #e0e0e0;
-}
+/* 系統訊息 (置中，灰色) */
+.messages-list li.system-msg { margin: 10px auto; background: transparent; color: #888; font-size: 0.85em; text-align: center; font-style: italic; box-shadow: none; width: 100%; max-width: 100%; }
 
-.messages-list {
-  flex: 1;
-  list-style: none;
-  padding: 15px;
-  margin: 0;
-  overflow-y: auto;
-  background: #f8fafc;
-}
+.msg-content { display: flex; flex-direction: column; }
+.msg-sender { font-weight: bold; font-size: 0.9em; margin-bottom: 2px; color: #333; }
+.msg-text { font-size: 1em; line-height: 1.4; }
+.msg-time { font-size: 0.7em; color: #999; align-self: flex-end; margin-top: 4px; }
 
-.messages-list li {
-  margin-bottom: 8px;
-  padding: 8px 12px;
-  background: white;
-  border-radius: 4px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-
-.messages-list li.system-msg {
-  background: transparent;
-  color: #888;
-  font-style: italic;
-  text-align: center;
-  box-shadow: none;
-  font-size: 0.9em;
-}
-
-.member-area {
-  width: 200px;
-  background: #fff;
-  padding: 15px;
-}
-
-.member-area h3 {
-  margin-top: 0;
-  font-size: 1rem;
-  border-bottom: 2px solid #eee;
-  padding-bottom: 10px;
-}
-
-.input-area {
-  display: flex;
-  padding: 15px;
-  background: white;
-  border-top: 1px solid #e0e0e0;
-}
-
-.input-field {
-  flex: 1;
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  margin-right: 10px;
-}
-
-.btn {
-  padding: 10px 20px;
-  background: #4ade80;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: bold;
-}
-
-.btn:hover {
-  background: #22c55e;
-}
+.member-area { width: 200px; background: #fff; padding: 15px; }
+.member-area h3 { margin-top: 0; font-size: 1rem; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+.input-area { display: flex; padding: 15px; background: white; border-top: 1px solid #e0e0e0; }
+.input-field { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-right: 10px; }
+.btn { padding: 10px 20px; background: #4ade80; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+.btn:hover { background: #22c55e; }
 </style>
-<!-- <template>
-  <div>
-    <NuxtRouteAnnouncer />
-    <NuxtWelcome />
-  </div>
-</template> -->
