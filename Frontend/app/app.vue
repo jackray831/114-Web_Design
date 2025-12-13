@@ -33,13 +33,19 @@
                 <span class="msg-text">{{ msg.message }}</span>
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
-              
+
+              <div v-else-if="msg.type === 'image'" class="msg-content">
+                <span class="msg-sender">{{ msg.nickname }}</span>
+                <img :src="msg.imageData" alt="圖片訊息" style="max-width: 200px; border-radius: 6px;" />
+                <span class="msg-time">{{ msg.time }}</span>
+              </div>
+
               <span v-else>
                 {{ msg.message }}
               </span>
             </li>
           </ul>
-
+          
           <form @submit.prevent="sendMessage" class="input-area">
             <input 
               v-model="inputMessage" 
@@ -48,6 +54,12 @@
               class="input-field"
             />
             <button type="submit" class="btn send-btn">傳送</button>
+
+            <!-- 新增 + 圖片上傳按鈕 -->
+            <label class="btn upload-btn">
+              ＋
+              <input type="file" accept="image/*" @change="handleImageUpload" style="display: none;" />
+            </label>
           </form>
         </div>
 
@@ -87,13 +99,12 @@ const joinChat = () => {
 
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data)
-    
+
     if (data.type === 'history') {
-      // 處理歷史訊息：將收到的歷史陣列設為目前的訊息
       messages.value = data.messages
       scrollToBottom()
     } 
-    else if (data.type === 'chat' || data.type === 'system') {
+    else if (['chat', 'system', 'image'].includes(data.type)) {
       messages.value.push(data)
       scrollToBottom()
     } 
@@ -101,6 +112,7 @@ const joinChat = () => {
       members.value = data.members
     }
   }
+
 
   // 處理錯誤與斷線
   ws.onclose = (event) => {
@@ -137,6 +149,23 @@ const scrollToBottom = async () => {
 onBeforeUnmount(() => {
   if (ws) ws.close()
 })
+const handleImageUpload = (event) => {
+  const file = event.target.files[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = () => {
+    const base64 = reader.result
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "image",
+        imageData: base64,
+      }))
+    }
+  }
+  reader.readAsDataURL(file)
+}
+
 </script>
 
 <style scoped>

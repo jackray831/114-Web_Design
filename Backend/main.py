@@ -127,19 +127,41 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
         while True:
             data = await websocket.receive_text()
 
-            # --- 產生時間戳記 ---
-            timestamp = datetime.now().strftime("%H:%M")
-            
-            # --- 存入資料庫 ---
-            save_message(nickname, data, timestamp)
-            
-            # 廣播訊息 (包含時間)
-            await manager.broadcast({
-                "type": "chat", 
-                "nickname": nickname, 
-                "message": data,
-                "time": timestamp 
-            })
+            try:
+                parsed = json.loads(data)
+                msg_type = parsed.get("type")
+                timestamp = datetime.now().strftime("%H:%M")
+
+                if msg_type == "image":
+                    image_data = parsed.get("imageData")
+                    # 不存圖片進資料庫，但仍廣播圖片訊息
+                    await manager.broadcast({
+                        "type": "image",
+                        "nickname": nickname,
+                        "imageData": image_data,
+                        "time": timestamp
+                    })
+
+                else:
+                    # 若不是圖片類型 → fallback 為純文字訊息（相容舊版前端）
+                    save_message(nickname, data, timestamp)
+                    await manager.broadcast({
+                        "type": "chat",
+                        "nickname": nickname,
+                        "message": data,
+                        "time": timestamp
+                    })
+
+            except json.JSONDecodeError:
+                # 舊版純文字訊息（非 JSON 格式）
+                timestamp = datetime.now().strftime("%H:%M")
+                save_message(nickname, data, timestamp)
+                await manager.broadcast({
+                    "type": "chat",
+                    "nickname": nickname,
+                    "message": data,
+                    "time": timestamp
+                })
             
     except WebSocketDisconnect:
         nickname_left = manager.disconnect(websocket)
