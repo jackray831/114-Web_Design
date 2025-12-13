@@ -28,7 +28,7 @@
               :key="index"
               :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === nickname }"
             >
-              <div v-if="msg.type === 'chat'" class="msg-content">
+              <div v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
                 <span class="msg-text">{{ msg.message }}</span>
                 <span class="msg-time">{{ msg.time }}</span>

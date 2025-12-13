@@ -1,12 +1,12 @@
 # main.py
 import uvicorn
-import json  # 導入 json 模組
+import json
 import sqlite3
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from typing import Dict, List # 導入 List
+from typing import Dict, List
 
 DB_NAME = "chat_log.db"
 
@@ -14,21 +14,23 @@ def init_db():
     """初始化資料庫"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # 建立 messages 表格，包含時間戳記
+    # [修改] 增加 msg_type 欄位，用來區分是 'text' 還是 'image'
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   nickname TEXT,
                   message TEXT,
+                  msg_type TEXT,
                   timestamp TEXT)''')
     conn.commit()
     conn.close()
 
-def save_message(nickname, message, timestamp):
-    """儲存訊息"""
+def save_message(nickname, message, timestamp, msg_type="text"):
+    """儲存訊息 (支援文字與圖片)"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("INSERT INTO messages (nickname, message, timestamp) VALUES (?, ?, ?)",
-              (nickname, message, timestamp))
+    # [修改] 插入時多存一個 msg_type
+    c.execute("INSERT INTO messages (nickname, message, msg_type, timestamp) VALUES (?, ?, ?, ?)",
+              (nickname, message, msg_type, timestamp))
     conn.commit()
     conn.close()
 
@@ -36,16 +38,27 @@ def get_recent_messages(limit=50):
     """取得最近的歷史訊息"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # 倒序抓取最新的 50 筆
-    c.execute("SELECT nickname, message, timestamp FROM messages ORDER BY id DESC LIMIT ?", (limit,))
+    # [修改] 讀取時也要抓 msg_type
+    c.execute("SELECT nickname, message, msg_type, timestamp FROM messages ORDER BY id DESC LIMIT ?", (limit,))
     rows = c.fetchall()
     conn.close()
     
-    # 將資料轉為字典格式，並反轉順序 (讓舊訊息在上面)
-    history = [
-        {"type": "chat", "nickname": row[0], "message": row[1], "time": row[2]} 
-        for row in rows
-    ]
+    # 將資料轉為字典格式
+    history = []
+    for row in rows:
+        msg_data = {
+            "nickname": row[0],
+            "time": row[3],
+            "type": row[2]  # 從資料庫讀取型別 (text 或 image)
+        }
+        
+        if row[2] == "image":
+            msg_data["imageData"] = row[1] # 如果是圖片，內容放在 imageData
+        else:
+            msg_data["message"] = row[1]   # 如果是文字，內容放在 message
+            
+        history.append(msg_data)
+
     return history[::-1]
 
 # 伺服器啟動時，初始化資料庫
@@ -129,12 +142,21 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
 
             try:
                 parsed = json.loads(data)
+
+                # [修改] 加入型別檢查：如果解析出來不是字典 (例如是 int, list, string)，則視為格式不符
+                if not isinstance(parsed, dict):
+                    raise ValueError("Parsed JSON is not a dictionary")
+
                 msg_type = parsed.get("type")
                 timestamp = datetime.now().strftime("%H:%M")
 
                 if msg_type == "image":
                     image_data = parsed.get("imageData")
-                    # 不存圖片進資料庫，但仍廣播圖片訊息
+
+                    # [修改] 這裡把圖片存進資料庫！
+                    # 我們把 image_data (Base64字串) 存入 message 欄位，並標記 msg_type 為 "image"
+                    save_message(nickname, image_data, timestamp, msg_type="image")
+                    
                     await manager.broadcast({
                         "type": "image",
                         "nickname": nickname,
@@ -143,8 +165,8 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
                     })
 
                 else:
-                    # 若不是圖片類型 → fallback 為純文字訊息（相容舊版前端）
-                    save_message(nickname, data, timestamp)
+                    # 一般文字訊息
+                    save_message(nickname, data, timestamp, msg_type="text")
                     await manager.broadcast({
                         "type": "chat",
                         "nickname": nickname,
@@ -152,10 +174,12 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
                         "time": timestamp
                     })
 
-            except json.JSONDecodeError:
-                # 舊版純文字訊息（非 JSON 格式）
+            # [修改] 除了 JSONDecodeError，也要捕捉 ValueError (我們剛剛手動引發的) 或 AttributeError
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                # 舊版純文字 fallback
                 timestamp = datetime.now().strftime("%H:%M")
-                save_message(nickname, data, timestamp)
+                # 這裡將 data (原始字串) 當作純文字訊息儲存
+                save_message(nickname, data, timestamp, msg_type="text")
                 await manager.broadcast({
                     "type": "chat",
                     "nickname": nickname,
