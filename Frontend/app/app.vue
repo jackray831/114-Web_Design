@@ -36,7 +36,8 @@
 
               <div v-else-if="msg.type === 'image'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
-                <img :src="msg.imageData" alt="圖片訊息" style="max-width: 200px; border-radius: 6px;" />
+                <!-- <img :src="msg.imageData" alt="圖片訊息" style="max-width: 200px; border-radius: 6px;" /> -->
+                 <ImageZoom :src="msg.imageData" alt="圖片訊息" />
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
 
@@ -78,6 +79,7 @@
 
 <script setup>
 import { ref, nextTick, onBeforeUnmount } from 'vue'
+import ImageZoom from '../components/ImageZoom.vue'
 
 const nickname = ref('')
 const inputMessage = ref('')
