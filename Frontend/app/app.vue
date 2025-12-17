@@ -1,23 +1,10 @@
 <template>
   <div class="container">
-    <div v-if="!isJoined" class="login-box">
-      <h2>加入聊天室</h2>
-      <form @submit.prevent="joinChat">
-        <input 
-          v-model="nickname" 
-          type="text" 
-          placeholder="請輸入暱稱" 
-          required 
-          class="input-field"
-        />
-        <button type="submit" class="btn">加入</button>
-      </form>
-    </div>
-
-    <div v-else class="chat-ui">
+    
+    <div class="chat-ui" :class="{ 'blurred': !isJoined }">
       <div class="header">
         <h1>聊天室</h1>
-        <span class="user-badge">我是: {{ nickname }}</span>
+        <span class="user-badge">我是: {{ isJoined ? nickname : '未登入' }}</span>
       </div>
 
       <div class="main-area">
@@ -36,7 +23,6 @@
 
               <div v-else-if="msg.type === 'image'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
-                <!-- <img :src="msg.imageData" alt="圖片訊息" style="max-width: 200px; border-radius: 6px;" /> -->
                  <ImageZoom :src="msg.imageData" alt="圖片訊息" />
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
@@ -53,13 +39,19 @@
               type="text" 
               placeholder="輸入訊息..." 
               class="input-field"
+              :disabled="!isJoined" 
             />
-            <button type="submit" class="btn send-btn">傳送</button>
+            <button type="submit" class="btn send-btn" :disabled="!isJoined">傳送</button>
 
-            <!-- 新增 + 圖片上傳按鈕 -->
             <label class="btn upload-btn">
               ＋
-              <input type="file" accept="image/*" @change="handleImageUpload" style="display: none;" />
+              <input 
+                type="file" 
+                accept="image/*" 
+                @change="handleImageUpload" 
+                style="display: none;" 
+                :disabled="!isJoined"
+              />
             </label>
           </form>
         </div>
@@ -74,6 +66,23 @@
         </div>
       </div>
     </div>
+
+    <div v-if="!isJoined" class="login-overlay">
+      <div class="login-box">
+        <h2>加入聊天室</h2>
+        <form @submit.prevent="joinChat">
+          <input 
+            v-model="nickname" 
+            type="text" 
+            placeholder="請輸入暱稱" 
+            required 
+            class="input-field"
+          />
+          <button type="submit" class="btn">加入</button>
+        </form>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -200,6 +209,7 @@ const handleImageUpload = (event) => {
   /* 初始動畫：讓視窗有個輕微往上浮現的效果 */
   animation: modalPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
   border: 1px solid rgba(255,255,255,0.8);
+  z-index: 101;
 }
 
 /* 視窗標題列 (Header) */
@@ -260,12 +270,17 @@ const handleImageUpload = (event) => {
 @keyframes modalPop {
   0% {
     opacity: 0;
-    transform: scale(0.9) translateY(20px);
+    transform: translateY(-100px);
   }
   100% {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translateY(0);
   }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* --- 2. 聊天室主介面：現代化風格 --- */
@@ -278,9 +293,38 @@ const handleImageUpload = (event) => {
   overflow: hidden;
   border-radius: 16px; /* 圓角 */
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+  transition: filter 0.5s ease;
+  filter: blur(0);
   /* 如果你想讓聊天室也像視窗一樣浮在中間，可以保留這兩行；若要全螢幕則拿掉 */
   max-width: 90vw;
   height: 95vh;
+}
+
+/* 當沒登入時，聊天室變模糊 */
+.chat-ui.blurred {
+  filter: blur(8px) grayscale(30%); /* 模糊 8px，並稍微去色讓焦點集中在登入框 */
+  pointer-events: none; /* 關鍵：禁止點擊背景的任何按鈕 */
+  /* transform: scale(1.02); 稍微放大一點點，避免模糊導致邊緣露白 */
+  transition: filter 0.5s ease; /* 登入成功時，慢慢變清晰的動畫 */
+}
+
+/* 登入遮罩層 (全螢幕覆蓋) */
+.login-overlay {
+  position: absolute; /* 絕對定位，蓋在 container 上 */
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  
+  background: rgba(0, 0, 0, 0.2); /* 稍微變暗，讓登入框更凸顯 */
+  z-index: 100; /* 確保在最上層 */
+  
+  /* 進場動畫 */
+  animation: fadeIn 0.5s;
 }
 
 /* Header：改用白色簡約風，加上陰影與模糊效果 */
