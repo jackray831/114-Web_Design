@@ -3,6 +3,7 @@ import uvicorn
 import json
 import sqlite3
 import os
+import re
 from datetime import datetime, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,6 +83,12 @@ def get_current_user_from_token(token: str):
 class UserAuth(BaseModel):
     username: str
     password: str
+
+# [新增] 專門給註冊用的模型，多一個確認密碼欄位
+class UserRegister(BaseModel):
+    username: str
+    password: str
+    confirm_password: str
 
 class Token(BaseModel):
     access_token: str
@@ -181,19 +188,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# [新增] 註冊 API
+# [修改] 註冊 API：改用 UserRegister 模型並加入驗證邏輯
 @app.post("/register")
-async def register(user: UserAuth):
+async def register(user: UserRegister):
+    # 1. 檢查兩次密碼是否輸入一致
+    if user.password != user.confirm_password:
+        raise HTTPException(status_code=400, detail="兩次輸入的密碼不一致")
+
+    # 2. 檢查密碼複雜度 (例如：至少8碼，且包含英文與數字)
+    # ^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$ 是一個常見的正則表達式
+    if len(user.password) < 8:
+        raise HTTPException(status_code=400, detail="密碼長度至少需要 8 個字元")
+
+    if not re.search(r"[A-Za-z]", user.password) or not re.search(r"\d", user.password):
+        raise HTTPException(status_code=400, detail="密碼必須包含至少一個英文字母與一個數字")
+
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # 檢查帳號是否已存在
+    # 3. 檢查帳號是否已存在
     c.execute("SELECT username FROM users WHERE username = ?", (user.username,))
     if c.fetchone():
         conn.close()
-        raise HTTPException(status_code=400, detail="使用者名稱已被使用")
+        raise HTTPException(status_code=400, detail="此帳號已被註冊")
     
-    # 將密碼加密後存入
+    # 4. 將密碼加密後存入資料庫
     hashed_password = get_password_hash(user.password)
     c.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", 
               (user.username, hashed_password))

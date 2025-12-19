@@ -4,9 +4,25 @@
     <div class="chat-ui" :class="{ 'blurred': !isJoined }">
       <div class="header">
         <h1>聊天室</h1>
+        
         <div class="header-right">
           <span class="user-badge">我是: {{ isJoined ? currentUser : '未登入' }}</span>
-          <button v-if="isJoined" @click="logout" class="logout-btn">登出</button>
+          
+          <div v-if="isJoined" class="menu-container">
+            
+            <button @click="toggleMenu" class="menu-btn" :class="{ active: showMenu }">
+              ⋮
+            </button>
+
+            <div v-if="showMenu" class="dropdown-menu">
+              <div class="menu-header-info">帳號設定</div>
+              <button @click="logout" class="dropdown-item logout-item">
+                登出
+              </button>
+            </div>
+            
+            <div v-if="showMenu" @click="showMenu = false" class="menu-backdrop"></div>
+          </div>
         </div>
       </div>
 
@@ -91,6 +107,15 @@
             required 
             class="input-field"
           />
+
+          <input 
+            v-if="isRegisterMode"
+            v-model="form.confirmPassword" 
+            type="password" 
+            placeholder="請再次輸入密碼" 
+            required 
+            class="input-field"
+          />
           
           <button type="submit" class="btn">
             {{ isRegisterMode ? '註冊並返回登入' : '登入聊天室' }}
@@ -117,11 +142,13 @@ import ImageZoom from '../components/ImageZoom.vue'
 const isJoined = ref(false)
 const isRegisterMode = ref(false) // 控制現在是 "登入" 還是 "註冊" 介面
 const errorMessage = ref('')
+const showMenu = ref(false)
 
 // 表單資料
 const form = reactive({
   username: '',
-  password: ''
+  password: '',
+  confirmPassword: ''
 })
 
 const currentUser = ref('') // 登入後的使用者名稱
@@ -142,10 +169,23 @@ const handleAuth = async () => {
   try {
     if (isRegisterMode.value) {
       // === 註冊流程 ===
+
+      // [新增] 前端先簡單檢查一下，提升使用者體驗
+      if (form.password !== form.confirmPassword) {
+        throw new Error("兩次密碼輸入不一致")
+      }
+      
+      // 準備要傳給後端的資料 (需包含 confirm_password)
+      const registerPayload = {
+        username: form.username,
+        password: form.password,
+        confirm_password: form.confirmPassword
+      }
+
       const res = await fetch(`${API_URL}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify(registerPayload)
       })
 
       if (!res.ok) {
@@ -155,7 +195,9 @@ const handleAuth = async () => {
 
       alert('註冊成功！請登入')
       isRegisterMode.value = false // 切換回登入模式
-      // 不清除 form.username 和 password，方便使用者直接按登入
+      // 清空密碼欄位避免混淆
+      form.password = ''
+      form.confirmPassword = ''
 
     } else {
       // === 登入流程 ===
@@ -227,6 +269,11 @@ const connectWebSocket = () => {
   }
 }
 
+// [新增] 切換選單顯示/隱藏
+const toggleMenu = () => {
+  showMenu.value = !showMenu.value
+}
+
 // --- [新增] 登出功能 ---
 const logout = () => {
   if (ws) {
@@ -237,8 +284,10 @@ const logout = () => {
   currentUser.value = ''
   form.username = ''
   form.password = ''
+  form.confirmPassword = '' // 記得清空確認密碼
   messages.value = []
   members.value = []
+  showMenu.value = false
 }
 
 const sendMessage = () => {
@@ -477,6 +526,109 @@ const handleImageUpload = (event) => {
   color: #0f172a;
 }
 
+/* --- Header 右側容器微調 --- */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 15px; /* 拉開名字與選單按鈕的距離 */
+}
+
+/* --- 選單容器 (相對定位，作為下拉選單的參考點) --- */
+.menu-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* --- 選單觸發按鈕 (三點) --- */
+.menu-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  font-weight: bold;
+}
+
+.menu-btn:hover, .menu-btn.active {
+  background-color: #f1f5f9;
+  color: #1e293b;
+}
+
+/* --- 下拉選單本體 --- */
+.dropdown-menu {
+  position: absolute;
+  top: 120%; /* 在按鈕下方一點點 */
+  right: 0;   /* 靠右對齊 */
+  width: 160px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  border: 1px solid #f1f5f9;
+  padding: 6px;
+  z-index: 50; /* 確保浮在最上層 */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: menuFadeIn 0.2s ease-out;
+}
+
+/* 選單內的小標題 */
+.menu-header-info {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 4px;
+}
+
+/* 選單內的按鈕 */
+.dropdown-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  color: #334155;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+  width: 100%;
+}
+
+.dropdown-item:hover {
+  background-color: #f8fafc;
+}
+
+/* 特製登出按鈕樣式 */
+.dropdown-item.logout-item {
+  color: #ef4444; /* 紅色文字 */
+}
+
+.dropdown-item.logout-item:hover {
+  background-color: #fef2f2; /* 淺紅色背景 */
+}
+
+/* --- 透明遮罩 (點擊外部關閉選單用) --- */
+.menu-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 49; /* 比選單低一層，但比其他內容高 */
+  cursor: default;
+}
+
+@keyframes menuFadeIn {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .user-badge {
   background: #e2e8f0;
   color: #475569;
@@ -484,22 +636,6 @@ const handleImageUpload = (event) => {
   border-radius: 20px;
   font-size: 0.85rem;
   font-weight: 600;
-}
-
-/* [新增] 登出按鈕樣式 */
-.logout-btn {
-  background: #fee2e2;
-  color: #ef4444;
-  border: 1px solid #fecaca;
-  padding: 5px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.85rem;
-  transition: all 0.2s;
-}
-
-.logout-btn:hover {
-  background: #fecaca;
 }
 
 /* 中間區域 */
