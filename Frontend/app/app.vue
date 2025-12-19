@@ -14,12 +14,17 @@
               ⋮
             </button>
 
-            <div v-if="showMenu" class="dropdown-menu">
-              <div class="menu-header-info">帳號設定</div>
-              <button @click="logout" class="dropdown-item logout-item">
-                登出
-              </button>
-            </div>
+            <Transition name="menu-slide">
+              <div v-if="showMenu" class="dropdown-menu">
+                <div class="menu-header-info">帳號設定</div>
+                <button @click="openChangePassword" class="dropdown-item">
+                  更改密碼
+                </button>
+                <button @click="logout" class="dropdown-item logout-item">
+                  登出
+                </button>
+              </div>
+            </Transition>
             
             <div v-if="showMenu" @click="showMenu = false" class="menu-backdrop"></div>
           </div>
@@ -86,50 +91,93 @@
       </div>
     </div>
 
-    <div v-if="!isJoined" class="login-overlay">
-      <div class="login-box">
-        <h2>{{ isRegisterMode ? '註冊帳號' : '使用者登入' }}</h2>
-        
-        <form @submit.prevent="handleAuth">
+    <Transition name="pop" appear>
+      <div v-if="!isJoined" class="login-overlay" @click="triggerBounce">
+        <div class="login-box" :class="{ 'bounce-active': isBouncing }" @click.stop>
+          <h2>{{ isRegisterMode ? '註冊帳號' : '使用者登入' }}</h2>
           
-          <input 
-            v-model="form.username" 
-            type="text" 
-            placeholder="帳號 (Username)" 
-            required 
-            class="input-field"
-          />
-          
-          <input 
-            v-model="form.password" 
-            type="password" 
-            placeholder="密碼 (Password)" 
-            required 
-            class="input-field"
-          />
+          <form @submit.prevent="handleAuth">
+            
+            <input 
+              v-model="form.username" 
+              type="text" 
+              placeholder="帳號 (Username)" 
+              required 
+              class="input-field"
+            />
+            
+            <input 
+              v-model="form.password" 
+              type="password" 
+              placeholder="密碼 (Password)" 
+              required 
+              class="input-field"
+            />
 
-          <input 
-            v-if="isRegisterMode"
-            v-model="form.confirmPassword" 
-            type="password" 
-            placeholder="請再次輸入密碼" 
-            required 
-            class="input-field"
-          />
-          
-          <button type="submit" class="btn">
-            {{ isRegisterMode ? '註冊並返回登入' : '登入聊天室' }}
-          </button>
+            <input 
+              v-if="isRegisterMode"
+              v-model="form.confirmPassword" 
+              type="password" 
+              placeholder="請再次輸入密碼" 
+              required 
+              class="input-field"
+            />
+            
+            <button type="submit" class="btn">
+              {{ isRegisterMode ? '註冊並返回登入' : '登入聊天室' }}
+            </button>
 
-          <div class="toggle-mode">
-            <span v-if="!isRegisterMode">還沒有帳號？ <a @click.prevent="isRegisterMode = true" href="#">去註冊</a></span>
-            <span v-else>已經有帳號了？ <a @click.prevent="isRegisterMode = false" href="#">直接登入</a></span>
+            <div class="toggle-mode">
+              <span v-if="!isRegisterMode">還沒有帳號？ <a @click.prevent="isRegisterMode = true" href="#">去註冊</a></span>
+              <span v-else>已經有帳號了？ <a @click.prevent="isRegisterMode = false" href="#">直接登入</a></span>
+            </div>
+            
+            <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
+          </form>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="pop" appear>
+      <div v-if="isChangePasswordOpen" class="login-overlay" @click="triggerBounce">
+        <div class="login-box" :class="{ 'bounce-active': isBouncing }" @click.stop>
+          <div style="position: relative;">
+            <h2>更改密碼</h2>
+            <button @click="closeChangePassword" class="close-btn">✕</button>
           </div>
           
-          <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
-        </form>
+          <form @submit.prevent="submitChangePassword">
+            <input 
+              v-model="passwordForm.oldPassword" 
+              type="password" 
+              placeholder="舊密碼" 
+              required 
+              class="input-field"
+            />
+            
+            <input 
+              v-model="passwordForm.newPassword" 
+              type="password" 
+              placeholder="新密碼 (至少8碼含英數)" 
+              required 
+              class="input-field"
+            />
+
+            <input 
+              v-model="passwordForm.confirmNewPassword" 
+              type="password" 
+              placeholder="確認新密碼" 
+              required 
+              class="input-field"
+            />
+            
+            <button type="submit" class="btn">確認修改</button>
+            
+            <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
+          </form>
+        </div>
       </div>
-    </div>
+    </Transition>
 
   </div>
 </template>
@@ -141,14 +189,23 @@ import ImageZoom from '../components/ImageZoom.vue'
 // --- 狀態變數 ---
 const isJoined = ref(false)
 const isRegisterMode = ref(false) // 控制現在是 "登入" 還是 "註冊" 介面
+const isChangePasswordOpen = ref(false)
+const isBouncing = ref(false)
 const errorMessage = ref('')
 const showMenu = ref(false)
 
-// 表單資料
+// 表單資料 - 登入/註冊
 const form = reactive({
   username: '',
   password: '',
   confirmPassword: ''
+})
+
+// 表單資料 - 修改密碼
+const passwordForm = reactive({
+  oldPassword: '',
+  newPassword: '',
+  confirmNewPassword: ''
 })
 
 const currentUser = ref('') // 登入後的使用者名稱
@@ -274,6 +331,72 @@ const toggleMenu = () => {
   showMenu.value = !showMenu.value
 }
 
+// [新增] 開啟更改密碼視窗 (並關閉下拉選單)
+const openChangePassword = () => {
+  showMenu.value = false // 關閉下拉選單
+  isChangePasswordOpen.value = true // 開啟視窗
+  // 清空表單
+  passwordForm.oldPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmNewPassword = ''
+  errorMessage.value = ''
+}
+
+// [新增] 關閉更改密碼視窗
+const closeChangePassword = () => {
+  isChangePasswordOpen.value = false
+  errorMessage.value = ''
+}
+
+// [新增] 觸發彈跳效果的函式
+const triggerBounce = () => {
+  // 如果正在彈跳中，就不重複觸發
+  if (isBouncing.value) return
+
+  isBouncing.value = true
+  
+  // 設定與 CSS 動畫時間相同的延遲 (0.3s = 300ms)，動畫結束後移除 class
+  setTimeout(() => {
+    isBouncing.value = false
+  }, 300)
+}
+
+// [新增] 送出更改密碼請求
+const submitChangePassword = async () => {
+  errorMessage.value = ''
+  
+  if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
+    errorMessage.value = "兩次新密碼輸入不一致"
+    return
+  }
+
+  try {
+    const res = await fetch(`${API_URL}/change-password`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token.value}` // 記得帶上 Token
+      },
+      body: JSON.stringify({
+        old_password: passwordForm.oldPassword,
+        new_password: passwordForm.newPassword,
+        confirm_new_password: passwordForm.confirmNewPassword
+      })
+    })
+
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.detail || '修改失敗')
+    }
+
+    alert('密碼修改成功！')
+    closeChangePassword()
+
+  } catch (error) {
+    errorMessage.value = error.message
+  }
+}
+
 // --- [新增] 登出功能 ---
 const logout = () => {
   if (ws) {
@@ -353,11 +476,9 @@ const handleImageUpload = (event) => {
   /* 關鍵：利用強烈的陰影創造「浮起來」的感覺 */
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), 0 5px 15px rgba(0,0,0,0.05);
   overflow: hidden; /* 確保內容不會凸出圓角 */
-  
-  /* 初始動畫：讓視窗有個輕微往下浮現的效果 */
-  animation: modalPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
   border: 1px solid rgba(255,255,255,0.8);
   z-index: 101;
+  transform-origin: center;
 }
 
 /* 視窗標題列 (Header) */
@@ -445,27 +566,9 @@ const handleImageUpload = (event) => {
   margin: 0;
 }
 
-/* 彈出動畫 Keyframes */
-@keyframes modalPop {
-  0% {
-    opacity: 0;
-    transform: translateY(-100px);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 /* --- 聊天室主介面 --- */
 .chat-ui {
   width: 100%;
-  height: 100%;
   background: white;
   display: flex;
   flex-direction: column;
@@ -474,7 +577,6 @@ const handleImageUpload = (event) => {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
   transition: filter 0.5s ease;
   filter: blur(0);
-  /* 如果你想讓聊天室也像視窗一樣浮在中間，可以保留這兩行；若要全螢幕則拿掉 */
   max-width: 90vw;
   height: 95vh;
 }
@@ -483,7 +585,6 @@ const handleImageUpload = (event) => {
 .chat-ui.blurred {
   filter: blur(8px) grayscale(30%); /* 模糊 8px，並稍微去色讓焦點集中在登入框 */
   pointer-events: none; /* 關鍵：禁止點擊背景的任何按鈕 */
-  /* transform: scale(1.02); 稍微放大一點點，避免模糊導致邊緣露白 */
   transition: filter 0.5s ease; /* 登入成功時，慢慢變清晰的動畫 */
 }
 
@@ -499,11 +600,8 @@ const handleImageUpload = (event) => {
   justify-content: center;
   align-items: center;
   
-  background: rgba(0, 0, 0, 0.2); /* 稍微變暗，讓登入框更凸顯 */
+  background: rgba(0, 0, 0, 0.4); /* 稍微變暗，讓登入框更凸顯 */
   z-index: 100; /* 確保在最上層 */
-  
-  /* 進場動畫 */
-  animation: fadeIn 0.5s;
 }
 
 /* Header：改用白色簡約風，加上陰影與模糊效果 */
@@ -574,7 +672,6 @@ const handleImageUpload = (event) => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  animation: menuFadeIn 0.2s ease-out;
 }
 
 /* 選單內的小標題 */
@@ -622,11 +719,6 @@ const handleImageUpload = (event) => {
   height: 100vh;
   z-index: 49; /* 比選單低一層，但比其他內容高 */
   cursor: default;
-}
-
-@keyframes menuFadeIn {
-  from { opacity: 0; transform: translateY(-5px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .user-badge {
@@ -845,6 +937,73 @@ const handleImageUpload = (event) => {
   color: #334155;
 }
 
+/* 視窗右上角的關閉按鈕 */
+.close-btn {
+  position: absolute;
+  right: 15px;
+  top: 15px;
+  background: transparent;
+  border: none;
+  font-size: 1.2rem;
+  color: #94a3b8;
+  cursor: pointer;
+  z-index: 10;
+}
+.close-btn:hover {
+  color: #475569;
+}
+
+/* --- 動畫效果 --- */
+.pop-enter-active,
+.pop-leave-active {
+  transition: opacity 0.5s ease;
+}
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
+}
+.pop-enter-active .login-box {
+  animation: modalPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+.pop-leave-active .login-box {
+  animation: modalClose 0.3s ease-in forwards;
+}
+.bounce-active {
+  animation: bounce 0.3s cubic-bezier(0.36, 0.07, 0.19, 0.97) forwards;
+}
+.menu-slide-enter-active,
+.menu-slide-leave-active {
+  transition: all 0.2s ease-out;
+  transform-origin: top right; /* 關鍵：讓動畫從右上角(按鈕處)開始縮放 */
+}
+.menu-slide-enter-from,
+.menu-slide-leave-to {
+  opacity: 0;
+  transform: scale(0.8) translateY(-5px); /* 稍微縮小並往上移 */
+}
+.menu-slide-enter-to,
+.menu-slide-leave-from {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+}
+@keyframes bounce {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.02); } /* 稍微放大 */
+  75% { transform: scale(0.99); } /* 稍微縮過頭 */
+  100% { transform: scale(1); }   /* 回復原狀 */
+}
+@keyframes modalPop {
+  0% { opacity: 0; transform: translateY(-100px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes modalClose {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-100px); }
+}
+@keyframes menuFadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 </style>
 
 <style>

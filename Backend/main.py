@@ -5,7 +5,7 @@ import sqlite3
 import os
 import re
 from datetime import datetime, timedelta
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
@@ -89,6 +89,12 @@ class UserRegister(BaseModel):
     username: str
     password: str
     confirm_password: str
+
+# [新增] 更改密碼用的資料模型
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+    confirm_new_password: str
 
 class Token(BaseModel):
     access_token: str
@@ -251,6 +257,58 @@ async def login_for_access_token(user_data: UserAuth):
         "token_type": "bearer",
         "username": user_data.username
     }
+
+# [新增] 更改密碼 API
+@app.post("/change-password")
+async def change_password(
+    req: ChangePasswordRequest, 
+    authorization: str = Header(None) # 從 Header 取得 Token
+):
+    # 1. 驗證 Token 是否存在
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="未登入或 Token 無效")
+    
+    token = authorization.split(" ")[1]
+    username = get_current_user_from_token(token)
+    
+    if not username:
+        raise HTTPException(status_code=401, detail="Token 無效或過期")
+
+    # 2. 驗證新密碼格式 (與註冊時相同的邏輯)
+    if req.new_password != req.confirm_new_password:
+        raise HTTPException(status_code=400, detail="兩次新密碼輸入不一致")
+
+    if len(req.new_password) < 8:
+        raise HTTPException(status_code=400, detail="新密碼長度至少需要 8 個字元")
+    
+    if not re.search(r"[A-Za-z]", req.new_password) or not re.search(r"\d", req.new_password):
+        raise HTTPException(status_code=400, detail="新密碼必須包含至少一個英文字母與一個數字")
+
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # 3. 取得目前使用者資料
+    c.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    
+    current_password_hash = row[0]
+
+    # 4. 驗證舊密碼是否正確
+    if not verify_password(req.old_password, current_password_hash):
+        conn.close()
+        raise HTTPException(status_code=400, detail="舊密碼錯誤")
+
+    # 5. 更新密碼
+    new_hashed_password = get_password_hash(req.new_password)
+    c.execute("UPDATE users SET password_hash = ? WHERE username = ?", (new_hashed_password, username))
+    conn.commit()
+    conn.close()
+
+    return {"message": "密碼修改成功"}
 
 # --- WebSocket 路由 (聊天室核心) ---
 @app.websocket("/ws")
