@@ -4,7 +4,10 @@
     <div class="chat-ui" :class="{ 'blurred': !isJoined }">
       <div class="header">
         <h1>聊天室</h1>
-        <span class="user-badge">我是: {{ isJoined ? nickname : '未登入' }}</span>
+        <div class="header-right">
+          <span class="user-badge">我是: {{ isJoined ? currentUser : '未登入' }}</span>
+          <button v-if="isJoined" @click="logout" class="logout-btn">登出</button>
+        </div>
       </div>
 
       <div class="main-area">
@@ -13,7 +16,7 @@
             <li 
               v-for="(msg, index) in messages" 
               :key="index"
-              :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === nickname }"
+              :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === currentUser }"
             >
               <div v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
@@ -69,16 +72,36 @@
 
     <div v-if="!isJoined" class="login-overlay">
       <div class="login-box">
-        <h2>加入聊天室</h2>
-        <form @submit.prevent="joinChat">
+        <h2>{{ isRegisterMode ? '註冊帳號' : '使用者登入' }}</h2>
+        
+        <form @submit.prevent="handleAuth">
+          
           <input 
-            v-model="nickname" 
+            v-model="form.username" 
             type="text" 
-            placeholder="請輸入暱稱" 
+            placeholder="帳號 (Username)" 
             required 
             class="input-field"
           />
-          <button type="submit" class="btn">加入</button>
+          
+          <input 
+            v-model="form.password" 
+            type="password" 
+            placeholder="密碼 (Password)" 
+            required 
+            class="input-field"
+          />
+          
+          <button type="submit" class="btn">
+            {{ isRegisterMode ? '註冊並返回登入' : '登入聊天室' }}
+          </button>
+
+          <div class="toggle-mode">
+            <span v-if="!isRegisterMode">還沒有帳號？ <a @click.prevent="isRegisterMode = true" href="#">去註冊</a></span>
+            <span v-else>已經有帳號了？ <a @click.prevent="isRegisterMode = false" href="#">直接登入</a></span>
+          </div>
+          
+          <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
         </form>
       </div>
     </div>
@@ -87,25 +110,88 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onBeforeUnmount } from 'vue'
+import { ref, reactive, nextTick, onBeforeUnmount } from 'vue'
 import ImageZoom from '../components/ImageZoom.vue'
 
-const nickname = ref('')
-const inputMessage = ref('')
+// --- 狀態變數 ---
 const isJoined = ref(false)
+const isRegisterMode = ref(false) // 控制現在是 "登入" 還是 "註冊" 介面
+const errorMessage = ref('')
+
+// 表單資料
+const form = reactive({
+  username: '',
+  password: ''
+})
+
+const currentUser = ref('') // 登入後的使用者名稱
+const token = ref('')       // JWT Token
+
+const inputMessage = ref('')
 const messages = ref([])
 const members = ref([]) 
 const messagesContainer = ref(null)
 
 let ws = null
+const API_URL = 'http://localhost:8000' // 後端 API 位址
 
-const joinChat = () => {
-  if (!nickname.value.trim()) return
+// --- [核心邏輯] 處理 註冊 或 登入 ---
+const handleAuth = async () => {
+  errorMessage.value = '' // 清空錯誤訊息
 
-  ws = new WebSocket(`ws://127.0.0.1:8000/ws?nickname=${encodeURIComponent(nickname.value)}`)
+  try {
+    if (isRegisterMode.value) {
+      // === 註冊流程 ===
+      const res = await fetch(`${API_URL}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form)
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || '註冊失敗')
+      }
+
+      alert('註冊成功！請登入')
+      isRegisterMode.value = false // 切換回登入模式
+      // 不清除 form.username 和 password，方便使用者直接按登入
+
+    } else {
+      // === 登入流程 ===
+      const res = await fetch(`${API_URL}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form)
+      })
+
+      if (!res.ok) {
+        throw new Error('帳號或密碼錯誤')
+      }
+
+      const data = await res.json()
+      // 登入成功，保存 Token 和 使用者名稱
+      token.value = data.access_token
+      currentUser.value = data.username
+      
+      // 開始連線 WebSocket
+      connectWebSocket()
+    }
+  } catch (error) {
+    errorMessage.value = error.message
+  }
+}
+
+// --- WebSocket 連線 ---
+const connectWebSocket = () => {
+  if (!token.value) return
+
+  // [修改] 網址不再傳 nickname，而是傳 token
+  ws = new WebSocket(`ws://127.0.0.1:8000/ws?token=${token.value}`)
 
   ws.onopen = () => {
     isJoined.value = true
+    errorMessage.value = ''
   }
 
   ws.onmessage = (event) => {
@@ -124,23 +210,35 @@ const joinChat = () => {
     }
   }
 
-
-  // 處理錯誤與斷線
   ws.onclose = (event) => {
+    // 若不是主動登出 (isJoined 為 true 代表是被動斷線)
+    if (isJoined.value) {
+      if (event.code === 4003) {
+        alert("驗證失敗或重複登入")
+      } else if (event.code !== 1000) {
+        console.log("連線中斷")
+      }
+    }
+    
+    // 重置狀態
     isJoined.value = false
     messages.value = []
     members.value = []
-    
-    // 檢查錯誤代碼 4003 (暱稱重複)
-    if (event.code === 4003) {
-      alert("這個暱稱已經有人使用了，請換一個！")
-    } else {
-      // 只有非正常關閉才跳出斷線提示
-      if (event.code !== 1000 && event.code !== 1005) {
-        alert("連線已中斷")
-      }
-    }
   }
+}
+
+// --- [新增] 登出功能 ---
+const logout = () => {
+  if (ws) {
+    isJoined.value = false // 先設為 false 避免觸發斷線 alert
+    ws.close()
+  }
+  token.value = ''
+  currentUser.value = ''
+  form.username = ''
+  form.password = ''
+  messages.value = []
+  members.value = []
 }
 
 const sendMessage = () => {
@@ -160,6 +258,7 @@ const scrollToBottom = async () => {
 onBeforeUnmount(() => {
   if (ws) ws.close()
 })
+
 const handleImageUpload = (event) => {
   const file = event.target.files[0]
   if (!file) return
@@ -196,7 +295,7 @@ const handleImageUpload = (event) => {
   overflow: hidden;   /* 關鍵：防止內容溢出導致外層捲軸 */
 }
 
-/* 登入視窗：模擬作業系統的視窗 */
+/* --- 登入視窗相關 --- */
 .login-box {
   background: white;
   width: 100%;
@@ -206,8 +305,8 @@ const handleImageUpload = (event) => {
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), 0 5px 15px rgba(0,0,0,0.05);
   overflow: hidden; /* 確保內容不會凸出圓角 */
   
-  /* 初始動畫：讓視窗有個輕微往上浮現的效果 */
-  animation: modalPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* 初始動畫：讓視窗有個輕微往下浮現的效果 */
+  animation: modalPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
   border: 1px solid rgba(255,255,255,0.8);
   z-index: 101;
 }
@@ -258,12 +357,43 @@ const handleImageUpload = (event) => {
   font-size: 1rem;
   border-radius: 8px;
   background: #4ade80;
+  color: white; /* 確保文字顏色 */
+  font-weight: bold; /* 加粗 */
   box-shadow: 0 4px 6px -1px rgba(74, 222, 128, 0.4);
   transition: transform 0.1s, box-shadow 0.1s;
+  border: none;
+  cursor: pointer;
 }
 
 .login-box .btn:active {
   transform: scale(0.98); /* 點擊時微縮 */
+}
+
+/* [新增] 切換模式連結樣式 */
+.toggle-mode {
+  text-align: center;
+  font-size: 0.9rem;
+  color: #64748b;
+  margin-top: 5px;
+}
+
+.toggle-mode a {
+  color: #4ade80;
+  text-decoration: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toggle-mode a:hover {
+  text-decoration: underline;
+}
+
+/* [新增] 錯誤訊息樣式 */
+.error-text {
+  color: #ef4444;
+  font-size: 0.85rem;
+  text-align: center;
+  margin: 0;
 }
 
 /* 彈出動畫 Keyframes */
@@ -283,7 +413,7 @@ const handleImageUpload = (event) => {
   to { opacity: 1; }
 }
 
-/* --- 2. 聊天室主介面：現代化風格 --- */
+/* --- 聊天室主介面 --- */
 .chat-ui {
   width: 100%;
   height: 100%;
@@ -356,6 +486,22 @@ const handleImageUpload = (event) => {
   font-weight: 600;
 }
 
+/* [新增] 登出按鈕樣式 */
+.logout-btn {
+  background: #fee2e2;
+  color: #ef4444;
+  border: 1px solid #fecaca;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.logout-btn:hover {
+  background: #fecaca;
+}
+
 /* 中間區域 */
 .main-area {
   display: flex;
@@ -400,7 +546,6 @@ const handleImageUpload = (event) => {
 /* 對方的訊息：白底 + 陰影 */
 .messages-list li:not(.system-msg):not(.my-msg) {
   background: white;
-  border: none; /* 移除邊框 */
   border-bottom-left-radius: 4px; /* 讓氣泡有個「尾巴」的感覺 */
   color: #334155;
 }
@@ -411,7 +556,6 @@ const handleImageUpload = (event) => {
   /* 漂亮的漸層綠色，呼應你的登入按鈕 */
   background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
   color: white;
-  border: none;
   border-bottom-right-radius: 4px; /* 尾巴在右邊 */
   box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2); /* 綠色光暈 */
 }
@@ -524,14 +668,18 @@ const handleImageUpload = (event) => {
   outline: none;
 }
 
-.btn { padding: 10px 20px; background: #4ade80; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+/* .btn { padding: 10px 20px; background: #4ade80; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; } */
 .btn:hover { background: #22c55e; }
 
 /* 傳送按鈕：圓形或圓角 */
 .send-btn {
+  border: none;
   border-radius: 24px;
   padding: 10px 25px;
   background: #10b981;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
   box-shadow: 0 4px 10px rgba(16, 185, 129, 0.2);
   transition: transform 0.1s;
 }
@@ -553,6 +701,7 @@ const handleImageUpload = (event) => {
   transition: 0.2s;
   font-size: 1.2rem;
   margin: 0; /* Reset */
+  border: none;
 }
 
 .upload-btn:hover {

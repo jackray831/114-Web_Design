@@ -2,13 +2,27 @@
 import uvicorn
 import json
 import sqlite3
-from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+import os
+from datetime import datetime, timedelta
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from typing import Dict, List
+from typing import Dict, List, Optional
+from pydantic import BaseModel
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from dotenv import load_dotenv
 
-DB_NAME = "chat_log.db"
+DB_NAME = "Database.db"
+
+# --- JWT 設定 ---
+load_dotenv()
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# [新增] 密碼雜湊器 (用來把密碼加密，不要存明碼！)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def init_db():
     """初始化資料庫"""
@@ -21,8 +35,58 @@ def init_db():
                   message TEXT,
                   msg_type TEXT,
                   timestamp TEXT)''')
+    
+    # [新增] 建立使用者表 (username 是主鍵，不可重複)
+    # 注意：password_hash 存的是加密後的字串，不是明碼
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (username TEXT PRIMARY KEY,
+                  password_hash TEXT)''')
+
     conn.commit()
     conn.close()
+
+# --- 認證相關函式 ---
+# [新增] 驗證密碼是否正確
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+# [新增] 將密碼加密
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+# [新增] 產生 JWT Token
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    
+    # payload 裡面放入過期時間 (exp)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+# [新增] 從 Token 解析出使用者 (用於 WebSocket 驗證)
+def get_current_user_from_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            return None
+        return username
+    except JWTError:
+        return None
+
+# [新增] 定義註冊/登入的資料格式
+class UserAuth(BaseModel):
+    username: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    username: str
 
 def save_message(nickname, message, timestamp, msg_type="text"):
     """儲存訊息 (支援文字與圖片)"""
@@ -117,23 +181,87 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- WebSocket 路由 (聊天室核心) ---
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客")):
+# [新增] 註冊 API
+@app.post("/register")
+async def register(user: UserAuth):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
     
-    # 嘗試連線
-    success = await manager.connect(websocket, nickname)
-    if not success:
-        return  # 如果暱稱重複，直接結束函式
+    # 檢查帳號是否已存在
+    c.execute("SELECT username FROM users WHERE username = ?", (user.username,))
+    if c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="使用者名稱已被使用")
+    
+    # 將密碼加密後存入
+    hashed_password = get_password_hash(user.password)
+    c.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", 
+              (user.username, hashed_password))
+    
+    conn.commit()
+    conn.close()
+    return {"message": "User created successfully"}
 
-    # --- 連線成功後，立刻傳送歷史訊息給該使用者 ---
+# [新增] 登入 API
+@app.post("/token", response_model=Token)
+async def login_for_access_token(user_data: UserAuth):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # 找使用者
+    c.execute("SELECT username, password_hash FROM users WHERE username = ?", (user_data.username,))
+    row = c.fetchone()
+    conn.close()
+    
+    # 驗證帳號存在 且 密碼正確
+    if not row or not verify_password(user_data.password, row[1]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # 登入成功，發放 Token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user_data.username}, expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "username": user_data.username
+    }
+
+# --- WebSocket 路由 (聊天室核心) ---
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+    # 注意：這裡將 nickname 改為接收 token
+
+    if token is None:
+        await websocket.close(code=4003, reason="Token missing")
+        return
+    
+    # 1. 驗證 Token，取得使用者名稱
+    username = get_current_user_from_token(token)
+    
+    if username is None:
+        # Token 無效或過期
+        await websocket.close(code=4003, reason="Invalid token")
+        return
+
+    # 2. 嘗試連線
+    success = await manager.connect(websocket, username)
+    if not success:
+        return # 這裡可能是重複登入
+
+    # 連線成功後，傳送歷史訊息
     history = get_recent_messages()
     # 我們定義一個新的類型 'history'
     await websocket.send_text(json.dumps({"type": "history", "messages": history}))
     
     # 廣播加入訊息
-    await manager.broadcast({"type": "system", "message": f"{nickname} 加入了聊天室"})
+    await manager.broadcast({"type": "system", "message": f"{username} 加入了聊天室"})
     await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
     
     try:
@@ -155,21 +283,21 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
 
                     # [修改] 這裡把圖片存進資料庫！
                     # 我們把 image_data (Base64字串) 存入 message 欄位，並標記 msg_type 為 "image"
-                    save_message(nickname, image_data, timestamp, msg_type="image")
+                    save_message(username, image_data, timestamp, msg_type="image")
                     
                     await manager.broadcast({
                         "type": "image",
-                        "nickname": nickname,
+                        "nickname": username,
                         "imageData": image_data,
                         "time": timestamp
                     })
 
                 else:
                     # 一般文字訊息
-                    save_message(nickname, data, timestamp, msg_type="text")
+                    save_message(username, data, timestamp, msg_type="text")
                     await manager.broadcast({
                         "type": "chat",
-                        "nickname": nickname,
+                        "nickname": username,
                         "message": data,
                         "time": timestamp
                     })
@@ -179,10 +307,10 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str = Query("訪客
                 # 舊版純文字 fallback
                 timestamp = datetime.now().strftime("%H:%M")
                 # 這裡將 data (原始字串) 當作純文字訊息儲存
-                save_message(nickname, data, timestamp, msg_type="text")
+                save_message(username, data, timestamp, msg_type="text")
                 await manager.broadcast({
                     "type": "chat",
-                    "nickname": nickname,
+                    "nickname": username,
                     "message": data,
                     "time": timestamp
                 })
