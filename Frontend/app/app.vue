@@ -1,7 +1,7 @@
 <template>
   <div class="container">
     
-    <div class="chat-ui" :class="{ 'blurred': !isJoined }">
+    <div class="chat-ui" :class="{ 'blurred': !isJoined || isChangePasswordOpen }">
       <div class="header">
         <h1>聊天室</h1>
         
@@ -47,7 +47,7 @@
 
               <div v-else-if="msg.type === 'image'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
-                 <ImageZoom :src="msg.imageData" alt="圖片訊息" />
+                 <ImageZoom :src="getFullImageUrl(msg.imageData)" alt="圖片訊息" />
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
 
@@ -431,21 +431,59 @@ onBeforeUnmount(() => {
   if (ws) ws.close()
 })
 
-const handleImageUpload = (event) => {
+// [新增] 處理圖片路徑的輔助函式
+// 目的：把後端回傳的 "/static/uploads/..." 轉成 "http://localhost:8000/static/uploads/..."
+const getFullImageUrl = (path) => {
+  if (!path) return ''
+  // 如果是舊的 Base64 資料 (開頭是 data:image)，直接回傳
+  if (path.startsWith('data:image')) return path
+  // 如果已經是完整的 http 開頭網址，直接回傳
+  if (path.startsWith('http')) return path
+  
+  // 否則，補上後端 API 的 Domain
+  return `${API_URL}${path}`
+}
+
+// [修改] 上傳圖片並發送訊息
+const handleImageUpload = async (event) => {
   const file = event.target.files[0]
   if (!file) return
 
-  const reader = new FileReader()
-  reader.onload = () => {
-    const base64 = reader.result
+  // 1. 建立 FormData
+  const formData = new FormData()
+  // 注意：這裡的 'file' 必須對應後端 @app.post("/upload") 裡的參數名稱
+  formData.append('file', file)
+
+  try {
+    // 2. 透過 HTTP POST 上傳圖片
+    const res = await fetch(`${API_URL}/upload`, {
+      method: 'POST',
+      body: formData // fetch 會自動設定 multipart/form-data
+    })
+
+    if (!res.ok) {
+      throw new Error('圖片上傳失敗')
+    }
+
+    const data = await res.json()
+    // 預期後端回傳: { "url": "/static/uploads/uuid-filename.jpg" }
+    const imageUrl = data.url
+
+    // 3. 上傳成功後，透過 WebSocket 發送「圖片網址」
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: "image",
-        imageData: base64,
+        imageData: imageUrl, // 這裡傳送的是短短的路徑字串
       }))
     }
+
+  } catch (error) {
+    console.error(error)
+    alert("圖片傳送失敗，請稍後再試")
+  } finally {
+    // 清空 input，這樣才能重複選取同一張圖片
+    event.target.value = ''
   }
-  reader.readAsDataURL(file)
 }
 
 </script>
@@ -600,7 +638,7 @@ const handleImageUpload = (event) => {
   justify-content: center;
   align-items: center;
   
-  background: rgba(0, 0, 0, 0.4); /* 稍微變暗，讓登入框更凸顯 */
+  background: rgba(0, 0, 0, 0.5); /* 稍微變暗，讓登入框更凸顯 */
   z-index: 100; /* 確保在最上層 */
 }
 
@@ -760,10 +798,10 @@ const handleImageUpload = (event) => {
 
 /* --- 訊息氣泡優化 (關鍵) --- */
 .messages-list li {
-  max-width: 70%;
+  max-width: 85%;
   padding: 12px 16px;
   border-radius: 18px; /* 更大的圓角 */
-  font-size: 0.95rem;
+  font-size: 1rem;
   line-height: 1.5;
   position: relative;
   box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 輕微陰影代替邊框 */
@@ -809,7 +847,10 @@ const handleImageUpload = (event) => {
   display: block;
 }
 
-.msg-text { font-size: 1em; line-height: 1.4; }
+.msg-text { 
+  font-size: 1em;
+  line-height: 1.4;
+}
 
 .msg-time {
   font-size: 0.7rem;
@@ -1018,5 +1059,9 @@ body {
 /* 確保 padding 不會讓寬度膨脹 */
 *, *::before, *::after {
   box-sizing: border-box;
+}
+
+.medium-zoom-overlay {
+  backdrop-filter: blur(5px); /* 背景模糊效果 */
 }
 </style>

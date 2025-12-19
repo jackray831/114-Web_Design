@@ -6,3 +6,10 @@ __pycache__/
 venv/
 .venv/
 env/
+
+# SQLite database
+*.db
+*.sqlite3
+
+# Static files
+static/uploads/*

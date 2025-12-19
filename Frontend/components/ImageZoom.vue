@@ -25,7 +25,7 @@ onMounted(() => {
   // background: 設定背景遮罩顏色
   // margin: 圖片放大後保留的邊距
   zoom = mediumZoom(imgRef.value, {
-    background: 'rgba(0, 0, 0, 0.8)',
+    background: 'rgba(0, 0, 0, 0.6)',
     margin: 24,
     ...props.options
   })
@@ -47,8 +47,13 @@ onUnmounted(() => {
 <style scoped>
 .zoomable-image {
   /* 這裡可以放原本圖片的樣式，例如圓角、大小限制 */
-  max-width: 200px;
-  border-radius: 3px;
+  max-width: 100%;
+  min-width: 100px;
+  max-height: 300px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
   cursor: zoom-in;
 }
 </style>

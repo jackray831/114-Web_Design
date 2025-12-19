@@ -4,9 +4,11 @@ import json
 import sqlite3
 import os
 import re
+import uuid # 用來產生唯一檔名
 from datetime import datetime, timedelta
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends, status, Header
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, status, Header, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles # 用來提供靜態檔案存取
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from pydantic import BaseModel
@@ -21,6 +23,11 @@ load_dotenv()
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# --- 定義檔案上傳目錄 ---
+UPLOAD_DIR = "static/uploads"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
 
 # [新增] 密碼雜湊器 (用來把密碼加密，不要存明碼！)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -185,6 +192,9 @@ manager = ConnectionManager()
 # ... (FastAPI 實例化) ...
 app = FastAPI(lifespan=lifespan)
 
+# 掛載靜態檔案路徑 (這行一定要加，讓前端讀得到圖片)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # --- CORS 設定 ---
 app.add_middleware(
     CORSMiddleware,
@@ -310,6 +320,32 @@ async def change_password(
 
     return {"message": "密碼修改成功"}
 
+# [新增] 專門處理圖片上傳的 API
+# 前端會用 Form Data (multipart/form-data) 傳送檔案到這裡
+@app.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    try:
+        # 1. 取得副檔名 (例如 .jpg, .png)
+        # 如果檔案沒有副檔名，預設給 .jpg
+        filename_ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+        
+        # 2. 產生亂碼檔名 (避免檔名重複)
+        unique_filename = f"{uuid.uuid4()}.{filename_ext}"
+        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        
+        # 3. 將檔案寫入硬碟
+        # UploadFile 物件支援 async read/write，效率比手動解 Base64 高
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+            
+        # 4. 回傳圖片的網址 (前端收到後，再透過 WebSocket 廣播這個網址)
+        return {"url": f"/static/uploads/{unique_filename}"}
+        
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Image upload failed")
+
 # --- WebSocket 路由 (聊天室核心) ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
@@ -356,18 +392,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                 timestamp = datetime.now().strftime("%H:%M")
 
                 if msg_type == "image":
-                    image_data = parsed.get("imageData")
+                    # [修改重點在此]
+                    # 現在前端傳過來的 imageData 不再是巨大的 Base64，
+                    # 而是剛剛從 /upload API 拿到的 "網址" (例如 /static/uploads/xxx.jpg)
+                    image_url = parsed.get("imageData")
 
-                    # [修改] 這裡把圖片存進資料庫！
-                    # 我們把 image_data (Base64字串) 存入 message 欄位，並標記 msg_type 為 "image"
-                    save_message(username, image_data, timestamp, msg_type="image")
-                    
-                    await manager.broadcast({
-                        "type": "image",
-                        "nickname": username,
-                        "imageData": image_data,
-                        "time": timestamp
-                    })
+                    if image_url:
+                        # 1. 存入資料庫 (只存網址)
+                        save_message(username, image_url, timestamp, msg_type="image")
+                        
+                        # 2. 廣播給所有人 (包含傳送者)
+                        await manager.broadcast({
+                            "type": "image",
+                            "nickname": username,
+                            "imageData": image_url, # 這裡廣播網址
+                            "time": timestamp
+                        })
 
                 else:
                     # 一般文字訊息
@@ -380,8 +420,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     })
 
             # [修改] 除了 JSONDecodeError，也要捕捉 ValueError (我們剛剛手動引發的) 或 AttributeError
-            except (json.JSONDecodeError, ValueError, AttributeError):
-                # 舊版純文字 fallback
+            except (json.JSONDecodeError, ValueError, AttributeError) as e:
+                # 錯誤處理
                 timestamp = datetime.now().strftime("%H:%M")
                 # 這裡將 data (原始字串) 當作純文字訊息儲存
                 save_message(username, data, timestamp, msg_type="text")
