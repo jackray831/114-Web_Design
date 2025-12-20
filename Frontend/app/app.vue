@@ -94,46 +94,54 @@
     <Transition name="pop" appear>
       <div v-if="!isJoined" class="login-overlay" @click="triggerBounce">
         <div class="login-box" :class="{ 'bounce-active': isBouncing }" @click.stop>
-          <h2>{{ isRegisterMode ? '註冊帳號' : '使用者登入' }}</h2>
-          
-          <form @submit.prevent="handleAuth">
-            
-            <input 
-              v-model="form.username" 
-              type="text" 
-              placeholder="帳號 (Username)" 
-              required 
-              class="input-field"
-            />
-            
-            <input 
-              v-model="form.password" 
-              type="password" 
-              placeholder="密碼 (Password)" 
-              required 
-              class="input-field"
-            />
+          <Transition 
+            :name="isRegisterMode ? 'slide-left' : 'slide-right'" 
+            mode="out-in"
+          >
+            <div :key="isRegisterMode" class="auth-container">
+              <h2>{{ isRegisterMode ? '註冊帳號' : '使用者登入' }}</h2>
+              
+              <form @submit.prevent="handleAuth">
+                
+                <input 
+                  v-model="form.username" 
+                  type="text" 
+                  placeholder="帳號 (Username)" 
+                  required 
+                  class="input-field"
+                />
+                
+                <input 
+                  v-model="form.password" 
+                  type="password" 
+                  placeholder="密碼 (Password)" 
+                  required 
+                  class="input-field"
+                />
 
-            <input 
-              v-if="isRegisterMode"
-              v-model="form.confirmPassword" 
-              type="password" 
-              placeholder="請再次輸入密碼" 
-              required 
-              class="input-field"
-            />
-            
-            <button type="submit" class="btn">
-              {{ isRegisterMode ? '註冊並返回登入' : '登入聊天室' }}
-            </button>
+                <input 
+                  v-if="isRegisterMode"
+                  v-model="form.confirmPassword" 
+                  type="password" 
+                  placeholder="請再次輸入密碼" 
+                  required 
+                  class="input-field"
+                />
+                
+                <button type="submit" class="btn" :disabled="isLoading">
+                  <span v-if="isLoading">處理中...</span>
+                  <span v-else>{{ isRegisterMode ? '註冊並返回登入' : '登入聊天室' }}</span>
+                </button>
 
-            <div class="toggle-mode">
-              <span v-if="!isRegisterMode">還沒有帳號？ <a @click.prevent="isRegisterMode = true" href="#">去註冊</a></span>
-              <span v-else>已經有帳號了？ <a @click.prevent="isRegisterMode = false" href="#">直接登入</a></span>
+                <div class="toggle-mode">
+                  <span v-if="!isRegisterMode">還沒有帳號？ <a @click.prevent="isRegisterMode = true; errorMessage = ''" href="#">去註冊</a></span>
+                  <span v-else>已經有帳號了？ <a @click.prevent="isRegisterMode = false; errorMessage = ''" href="#">直接登入</a></span>
+                </div>
+                
+                <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
+              </form>
             </div>
-            
-            <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
-          </form>
+          </Transition>
         </div>
       </div>
     </Transition>
@@ -171,7 +179,7 @@
               class="input-field"
             />
             
-            <button type="submit" class="btn">確認修改</button>
+            <button type="submit" class="btn" :disabled="isLoading">{{ isLoading ? '處理中...' : '確認修改' }}</button>
             
             <p v-if="errorMessage" class="error-text">{{ errorMessage }}</p>
           </form>
@@ -191,6 +199,7 @@ const isJoined = ref(false)
 const isRegisterMode = ref(false) // 控制現在是 "登入" 還是 "註冊" 介面
 const isChangePasswordOpen = ref(false)
 const isBouncing = ref(false)
+const isLoading = ref(false)
 const errorMessage = ref('')
 const showMenu = ref(false)
 
@@ -221,6 +230,8 @@ const API_URL = 'http://localhost:8000' // 後端 API 位址
 
 // --- [核心邏輯] 處理 註冊 或 登入 ---
 const handleAuth = async () => {
+  if (isLoading.value) return // 防止重複提交
+  isLoading.value = true
   errorMessage.value = '' // 清空錯誤訊息
 
   try {
@@ -278,6 +289,8 @@ const handleAuth = async () => {
     }
   } catch (error) {
     errorMessage.value = error.message
+  } finally {
+    isLoading.value = false
   }
 }
 
@@ -363,6 +376,7 @@ const triggerBounce = () => {
 
 // [新增] 送出更改密碼請求
 const submitChangePassword = async () => {
+  if (isLoading.value) return // 防止重複提交
   errorMessage.value = ''
   
   if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
@@ -370,6 +384,7 @@ const submitChangePassword = async () => {
     return
   }
 
+  isLoading.value = true
   try {
     const res = await fetch(`${API_URL}/change-password`, {
       method: 'POST',
@@ -394,6 +409,8 @@ const submitChangePassword = async () => {
 
   } catch (error) {
     errorMessage.value = error.message
+  } finally {
+    isLoading.value = false
   }
 }
 
@@ -517,6 +534,7 @@ const handleImageUpload = async (event) => {
   border: 1px solid rgba(255,255,255,0.8);
   z-index: 101;
   transform-origin: center;
+  transition: all 0.3s ease;
 }
 
 /* 視窗標題列 (Header) */
@@ -575,6 +593,12 @@ const handleImageUpload = async (event) => {
 
 .login-box .btn:active {
   transform: scale(0.98); /* 點擊時微縮 */
+}
+
+.login-box .btn:disabled {
+  background: #a7f3d0;
+  cursor: not-allowed;
+  transform: scale(1);
 }
 
 /* [新增] 切換模式連結樣式 */
@@ -652,7 +676,8 @@ const handleImageUpload = async (event) => {
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid #f1f5f9;
-  /* z-index: 10; 確保浮在訊息上面 */
+  position: relative;
+  z-index: 100; /* 確保浮在訊息上面 */
 }
 
 .header h1 {
@@ -995,6 +1020,15 @@ const handleImageUpload = async (event) => {
 }
 
 /* --- 動畫效果 --- */
+.slide-left-enter-active, .slide-left-leave-active,
+.slide-right-enter-active, .slide-right-leave-active {
+  transition: all 0.2s ease-in-out;
+}
+.slide-left-leave-to { opacity: 0; transform: translateX(-50px); }
+.slide-left-enter-from { opacity: 0; transform: translateX(50px); }
+.slide-right-leave-to { opacity: 0; transform: translateX(50px); }
+.slide-right-enter-from { opacity: 0; transform: translateX(-50px); }
+
 .pop-enter-active,
 .pop-leave-active {
   transition: opacity 0.5s ease;
@@ -1044,6 +1078,20 @@ const handleImageUpload = async (event) => {
 @keyframes menuFadeIn {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* RWD - 當螢幕寬度小於 768px (手機/平板直向) */
+@media (max-width: 768px) {
+  .member-area {
+    display: none; /* 預設隱藏成員列表 */
+    /* 或者改為 position: absolute 的側邊欄 */
+  }
+  
+  .chat-ui {
+    max-width: 100vw;
+    height: 100vh;
+    border-radius: 0; /* 手機版通常不需要圓角，佔滿全螢幕體驗較好 */
+  }
 }
 </style>
 
