@@ -138,6 +138,9 @@ def get_recent_messages(limit=50):
         
         if row[2] == "image":
             msg_data["imageData"] = row[1] # 如果是圖片，內容放在 imageData
+        elif row[2] == "file":
+            msg_data["imageData"] = row[1]
+            msg_data["filename"] = "附件"
         else:
             msg_data["message"] = row[1]   # 如果是文字，內容放在 message
             
@@ -323,28 +326,30 @@ async def change_password(
 # [新增] 專門處理圖片上傳的 API
 # 前端會用 Form Data (multipart/form-data) 傳送檔案到這裡
 @app.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...)):
     try:
-        # 1. 取得副檔名 (例如 .jpg, .png)
-        # 如果檔案沒有副檔名，預設給 .jpg
-        filename_ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
-        
-        # 2. 產生亂碼檔名 (避免檔名重複)
+        # 允許的副檔名類型
+        allowed_extensions = ["jpg", "jpeg", "png", "gif", "pdf", "doc", "docx", "zip", "rar"]
+
+        # 取得副檔名
+        filename_ext = file.filename.split(".")[-1].lower()
+        if filename_ext not in allowed_extensions:
+            raise HTTPException(status_code=400, detail="不支援的檔案類型")
+
+        # 產生亂碼檔名
         unique_filename = f"{uuid.uuid4()}.{filename_ext}"
         file_path = os.path.join(UPLOAD_DIR, unique_filename)
-        
-        # 3. 將檔案寫入硬碟
-        # UploadFile 物件支援 async read/write，效率比手動解 Base64 高
+
+        # 儲存檔案
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
-            
-        # 4. 回傳圖片的網址 (前端收到後，再透過 WebSocket 廣播這個網址)
+
         return {"url": f"/static/uploads/{unique_filename}"}
-        
+
     except Exception as e:
         print(f"Upload failed: {e}")
-        raise HTTPException(status_code=500, detail="Image upload failed")
+        raise HTTPException(status_code=500, detail="檔案上傳失敗")
 
 # --- WebSocket 路由 (聊天室核心) ---
 @app.websocket("/ws")
@@ -408,7 +413,19 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                             "imageData": image_url, # 這裡廣播網址
                             "time": timestamp
                         })
+                elif msg_type == "file":
+                    file_url = parsed.get("imageData")  # 雖然是檔案，但欄位仍用 imageData
+                    filename = parsed.get("filename", "附件")
 
+                    if file_url:
+                        save_message(username, file_url, timestamp, msg_type="file")
+                        await manager.broadcast({
+                            "type": "file",
+                            "nickname": username,
+                            "imageData": file_url,
+                            "filename": filename,
+                            "time": timestamp
+                        })
                 else:
                     # 一般文字訊息
                     save_message(username, data, timestamp, msg_type="text")
