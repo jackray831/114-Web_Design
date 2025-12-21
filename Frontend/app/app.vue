@@ -41,7 +41,7 @@
             >
               <div v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
-                <span class="msg-text">{{ msg.message }}</span>
+                <span class="msg-text" v-html="linkify(msg.message)"></span>
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
 
@@ -447,6 +447,17 @@ const scrollToBottom = async () => {
 onBeforeUnmount(() => {
   if (ws) ws.close()
 })
+
+//將文字中的網址轉成可點擊連結
+const linkify = (text) => {
+  if (!text) return ''
+
+  const urlRegex = /(https?:\/\/[^\s]+)/g
+
+  return text.replace(urlRegex, (url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="chat-link">${url}</a>`
+  })
+}
 
 // [新增] 處理圖片路徑的輔助函式
 // 目的：把後端回傳的 "/static/uploads/..." 轉成 "http://localhost:8000/static/uploads/..."
@@ -883,6 +894,17 @@ const handleImageUpload = async (event) => {
   margin-top: 5px;
   display: block;
   text-align: right;
+}
+
+/* 聊天室網址樣式 */
+.chat-link {
+  color: #2563eb;          /* 藍色 */
+  text-decoration: underline;
+  word-break: break-all;   /* 避免長網址爆版 */
+}
+
+.chat-link:hover {
+  color: #1d4ed8;
 }
 
 /* 右側：成員列表 (讓它看起來像個面板) */
