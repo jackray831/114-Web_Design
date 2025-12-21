@@ -141,6 +141,9 @@ def get_recent_messages(limit=50):
         elif row[2] == "file":
             msg_data["imageData"] = row[1]
             msg_data["filename"] = "附件"
+        elif row[2] == "video":
+            msg_data["imageData"] = row[1]
+            msg_data["filename"] = "影片"
         else:
             msg_data["message"] = row[1]   # 如果是文字，內容放在 message
             
@@ -329,7 +332,7 @@ async def change_password(
 async def upload_file(file: UploadFile = File(...)):
     try:
         # 允許的副檔名類型
-        allowed_extensions = ["jpg", "jpeg", "png", "gif", "pdf", "doc", "docx", "zip", "rar"]
+        allowed_extensions = ["jpg", "jpeg", "png", "gif", "pdf", "doc", "docx", "zip", "rar","mp4", "webm"]
 
         # 取得副檔名
         filename_ext = file.filename.split(".")[-1].lower()
@@ -426,6 +429,20 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                             "filename": filename,
                             "time": timestamp
                         })
+                elif msg_type == "video":
+                    video_url = parsed.get("imageData")
+                    filename = parsed.get("filename", "影片")
+
+                    if video_url:
+                        save_message(username, video_url, timestamp, msg_type="video")
+                        await manager.broadcast({
+                            "type": "video",
+                            "nickname": username,
+                            "imageData": video_url,
+                            "filename": filename,
+                            "time": timestamp
+                        })
+
                 else:
                     # 一般文字訊息
                     save_message(username, data, timestamp, msg_type="text")

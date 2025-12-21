@@ -51,6 +51,16 @@
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
               
+              <div v-else-if="msg.type === 'video'" class="msg-content">
+                <span class="msg-sender">{{ msg.nickname }}</span>
+                <video 
+                  :src="getFullImageUrl(msg.imageData)" 
+                  controls 
+                  style="max-width: 300px; border-radius: 8px; margin-top: 5px;" 
+                />
+                <span class="msg-time">{{ msg.time }}</span>
+              </div>
+
               <div v-else-if="msg.type === 'file'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
                 <a :href="getFullImageUrl(msg.imageData)" download target="_blank" class="chat-link">
@@ -79,7 +89,7 @@
               ＋
               <input 
                 type="file" 
-                accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx,.zip,.rar"  
+                accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx,.zip,.rar,.mp4,.webm"  
                 @change="handleFileUpload" 
                 style="display: none;" 
                 :disabled="!isJoined"
@@ -321,7 +331,7 @@ const connectWebSocket = () => {
       messages.value = data.messages
       scrollToBottom()
     } 
-    else if (['chat', 'system', 'image', 'file'].includes(data.type)) {
+    else if (['chat', 'system', 'image', 'file', 'video'].includes(data.type)) {
       messages.value.push(data)
       scrollToBottom()
     } 
@@ -499,12 +509,13 @@ const handleFileUpload = async (event) => {
     const data = await res.json()
     const fileUrl = data.url
 
-    // 根據副檔名判斷是否為圖片
+    // 根據副檔名判斷是否為圖片或影片
     const isImage = file.type.startsWith('image/')
+    const isVideo = file.type.startsWith('video/')
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
-        type: isImage ? 'image' : 'file',
+        type: isImage ? 'image' : (isVideo ? 'video' : 'file'),
         imageData: fileUrl,  // 後端統一回傳 /static/uploads/xxx.xxx
         filename: file.name
       }))
