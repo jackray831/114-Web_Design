@@ -50,6 +50,14 @@
                  <ImageZoom :src="getFullImageUrl(msg.imageData)" alt="圖片訊息" />
                 <span class="msg-time">{{ msg.time }}</span>
               </div>
+              
+              <div v-else-if="msg.type === 'file'" class="msg-content">
+                <span class="msg-sender">{{ msg.nickname }}</span>
+                <a :href="getFullImageUrl(msg.imageData)" download target="_blank" class="chat-link">
+                  {{ msg.filename || '檔案下載' }}
+                </a>
+                <span class="msg-time">{{ msg.time }}</span>
+              </div>
 
               <span v-else>
                 {{ msg.message }}
@@ -71,8 +79,8 @@
               ＋
               <input 
                 type="file" 
-                accept="image/*" 
-                @change="handleImageUpload" 
+                accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx,.zip,.rar"  
+                @change="handleFileUpload" 
                 style="display: none;" 
                 :disabled="!isJoined"
               />
@@ -313,7 +321,7 @@ const connectWebSocket = () => {
       messages.value = data.messages
       scrollToBottom()
     } 
-    else if (['chat', 'system', 'image'].includes(data.type)) {
+    else if (['chat', 'system', 'image', 'file'].includes(data.type)) {
       messages.value.push(data)
       scrollToBottom()
     } 
@@ -472,44 +480,39 @@ const getFullImageUrl = (path) => {
   return `${API_URL}${path}`
 }
 
-// [修改] 上傳圖片並發送訊息
-const handleImageUpload = async (event) => {
+// [修改] 上傳檔案並發送訊息
+const handleFileUpload = async (event) => {
   const file = event.target.files[0]
   if (!file) return
 
-  // 1. 建立 FormData
   const formData = new FormData()
-  // 注意：這裡的 'file' 必須對應後端 @app.post("/upload") 裡的參數名稱
   formData.append('file', file)
 
   try {
-    // 2. 透過 HTTP POST 上傳圖片
     const res = await fetch(`${API_URL}/upload`, {
       method: 'POST',
-      body: formData // fetch 會自動設定 multipart/form-data
+      body: formData
     })
 
-    if (!res.ok) {
-      throw new Error('圖片上傳失敗')
-    }
+    if (!res.ok) throw new Error('檔案上傳失敗')
 
     const data = await res.json()
-    // 預期後端回傳: { "url": "/static/uploads/uuid-filename.jpg" }
-    const imageUrl = data.url
+    const fileUrl = data.url
 
-    // 3. 上傳成功後，透過 WebSocket 發送「圖片網址」
+    // 根據副檔名判斷是否為圖片
+    const isImage = file.type.startsWith('image/')
+
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
-        type: "image",
-        imageData: imageUrl, // 這裡傳送的是短短的路徑字串
+        type: isImage ? 'image' : 'file',
+        imageData: fileUrl,  // 後端統一回傳 /static/uploads/xxx.xxx
+        filename: file.name
       }))
     }
 
-  } catch (error) {
-    console.error(error)
-    alert("圖片傳送失敗，請稍後再試")
+  } catch (err) {
+    alert(err.message || '上傳失敗')
   } finally {
-    // 清空 input，這樣才能重複選取同一張圖片
     event.target.value = ''
   }
 }
