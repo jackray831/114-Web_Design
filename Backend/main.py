@@ -5,10 +5,12 @@ import sqlite3
 import os
 import re
 import uuid # 用來產生唯一檔名
+import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, status, Header, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles # 用來提供靜態檔案存取
+from fastapi.concurrency import run_in_threadpool
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from pydantic import BaseModel
@@ -36,6 +38,10 @@ def init_db():
     """初始化資料庫"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+
+    # [新增] 開啟 WAL 模式 (關鍵！)
+    c.execute("PRAGMA journal_mode=WAL;")
+
     # [修改] 增加 msg_type 欄位，用來區分是 'text' 還是 'image'
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +161,8 @@ def get_recent_messages(limit=50):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # [新增] 啟動背景寫入任務
+    writer_task = asyncio.create_task(db_writer_worker())
     yield
 
 class ConnectionManager:
@@ -189,11 +197,34 @@ class ConnectionManager:
         payload 是一個字典，我們會將它轉換為 JSON 字串
         """
         message_str = json.dumps(payload)  # 將字典轉為 JSON 字串
-        for connection in self.active_connections:
-            await connection.send_text(message_str)
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(message_str)
+            except Exception:
+                pass
 
 # 實例化連線管理器
 manager = ConnectionManager()
+
+# [新增] 全域訊息佇列
+message_queue = asyncio.Queue()
+
+# [新增] 背景工兵：專門負責把佇列裡的訊息寫入資料庫
+async def db_writer_worker():
+    while True:
+        # 從佇列拿出一個任務 (如果沒任務，這裡會自動等待，不佔資源)
+        task = await message_queue.get()
+        
+        nickname, message, timestamp, msg_type = task
+        
+        # 這裡執行原本的寫入邏輯 (使用 run_in_threadpool 避免卡住工兵)
+        try:
+            await run_in_threadpool(save_message, nickname, message, timestamp, msg_type)
+        except Exception as e:
+            print(f"背景寫入失敗: {e}")
+        
+        # 標記任務完成
+        message_queue.task_done()
 
 # ... (FastAPI 實例化) ...
 app = FastAPI(lifespan=lifespan)
@@ -209,6 +240,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# [新增] 取得所有已註冊的使用者清單 (供前端計算離線成員用)
+@app.get("/users")
+async def get_all_users():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # 只選取 username 欄位
+    c.execute("SELECT username FROM users")
+    rows = c.fetchall()
+    conn.close()
+    
+    # rows 的格式會是 [('alice',), ('bob',), ...]
+    # 我們要把它轉成單純的 list: ['alice', 'bob', ...]
+    all_users = [row[0] for row in rows]
+    
+    return all_users
 
 # [修改] 註冊 API：改用 UserRegister 模型並加入驗證邏輯
 @app.post("/register")
@@ -406,8 +454,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     image_url = parsed.get("imageData")
 
                     if image_url:
-                        # 1. 存入資料庫 (只存網址)
-                        save_message(username, image_url, timestamp, msg_type="image")
+                        # 丟進佇列 (Tuple 格式要跟 worker 對應)
+                        message_queue.put_nowait((username, image_url, timestamp, "image"))
                         
                         # 2. 廣播給所有人 (包含傳送者)
                         await manager.broadcast({
@@ -421,7 +469,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     filename = parsed.get("filename", "附件")
 
                     if file_url:
-                        save_message(username, file_url, timestamp, msg_type="file")
+                        message_queue.put_nowait((username, file_url, timestamp, "file"))
                         await manager.broadcast({
                             "type": "file",
                             "nickname": username,
@@ -434,7 +482,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     filename = parsed.get("filename", "影片")
 
                     if video_url:
-                        save_message(username, video_url, timestamp, msg_type="video")
+                        message_queue.put_nowait((username, video_url, timestamp, "video"))
                         await manager.broadcast({
                             "type": "video",
                             "nickname": username,
@@ -445,7 +493,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
 
                 else:
                     # 一般文字訊息
-                    save_message(username, data, timestamp, msg_type="text")
+                    message_queue.put_nowait((username, data, timestamp, "text"))
                     await manager.broadcast({
                         "type": "chat",
                         "nickname": username,
@@ -458,7 +506,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                 # 錯誤處理
                 timestamp = datetime.now().strftime("%H:%M")
                 # 這裡將 data (原始字串) 當作純文字訊息儲存
-                save_message(username, data, timestamp, msg_type="text")
+                message_queue.put_nowait((username, data, timestamp, "text"))
                 await manager.broadcast({
                     "type": "chat",
                     "nickname": username,

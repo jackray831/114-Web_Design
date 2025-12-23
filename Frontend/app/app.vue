@@ -77,6 +77,7 @@
           
           <form @submit.prevent="sendMessage" class="input-area">
             <input 
+              ref="chatInputRef"
               v-model="inputMessage" 
               type="text" 
               placeholder="輸入訊息..." 
@@ -99,12 +100,23 @@
         </div>
 
         <div class="member-area">
-          <h3>在線成員 ({{ members.length }})</h3>
-          <ul>
-            <li v-for="(member, index) in members" :key="index">
+          <h3 class="status-title online">線上 ({{ members.length }})</h3>
+          <ul class="member-list">
+            <li v-for="(member, index) in members" :key="'on-'+index">
               {{ member }}
             </li>
           </ul>
+
+          <div v-if="offlineMembers.length > 0" style="margin-top: 20px;">
+            <h3 class="status-title offline">
+              離線 ({{ offlineMembers.length }})
+            </h3>
+            <ul class="member-list offline-list">
+              <li v-for="(member, index) in offlineMembers" :key="'off-'+index">
+                {{ member }}
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>
@@ -122,6 +134,7 @@
               <form @submit.prevent="handleAuth">
                 
                 <input 
+                  v-focus
                   v-model="form.username" 
                   type="text" 
                   placeholder="帳號 (Username)" 
@@ -174,6 +187,7 @@
           
           <form @submit.prevent="submitChangePassword">
             <input 
+              v-focus
               v-model="passwordForm.oldPassword" 
               type="password" 
               placeholder="舊密碼" 
@@ -209,7 +223,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, nextTick, onBeforeUnmount } from 'vue'
+import { ref, reactive, nextTick, onBeforeUnmount, watch, computed } from 'vue'
 import ImageZoom from '../components/ImageZoom.vue'
 
 // --- 狀態變數 ---
@@ -242,9 +256,31 @@ const inputMessage = ref('')
 const messages = ref([])
 const members = ref([]) 
 const messagesContainer = ref(null)
+const allUsers = ref([])
+
+const vFocus = { mounted: (el) => el.focus() }
+const chatInputRef = ref(null)
 
 let ws = null
 const API_URL = 'http://localhost:8000' // 後端 API 位址
+
+// --- [新增] 計算離線成員 (所有成員 - 在線成員) ---
+// 這裡的 members 是 WebSocket 傳來的「在線名單」
+const offlineMembers = computed(() => {
+  return allUsers.value.filter(user => !members.value.includes(user))
+})
+
+// --- [新增] 抓取所有成員的函式 ---
+const fetchAllUsers = async () => {
+  try {
+    const res = await fetch(`${API_URL}/users`) // 呼叫剛加的後端 API
+    if (res.ok) {
+      allUsers.value = await res.json()
+    }
+  } catch (err) {
+    console.error("無法取得成員列表", err)
+  }
+}
 
 // --- [核心邏輯] 處理 註冊 或 登入 ---
 const handleAuth = async () => {
@@ -301,6 +337,9 @@ const handleAuth = async () => {
       // 登入成功，保存 Token 和 使用者名稱
       token.value = data.access_token
       currentUser.value = data.username
+
+      // [新增] 登入成功後，立刻抓取所有成員名單
+      fetchAllUsers()
       
       // 開始連線 WebSocket
       connectWebSocket()
@@ -337,6 +376,7 @@ const connectWebSocket = () => {
     } 
     else if (data.type === 'member_list_update') {
       members.value = data.members
+      fetchAllUsers() // 更新所有成員列表
     }
   }
 
@@ -466,7 +506,15 @@ onBeforeUnmount(() => {
   if (ws) ws.close()
 })
 
-//將文字中的網址轉成可點擊連結
+// --- [新增] 監聽登入狀態，登入成功後聚焦聊天框 ---
+watch(isJoined, async (newVal) => {
+  if (newVal) {
+    await nextTick() // 等待 DOM 更新 (disable 屬性移除)
+    chatInputRef.value?.focus()
+  }
+})
+
+// 將文字中的網址轉成可點擊連結
 const linkify = (text) => {
   if (!text) return ''
 
@@ -929,6 +977,8 @@ const handleFileUpload = async (event) => {
   padding: 20px;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  height: 100%;
 }
 
 .member-area h3 {
@@ -938,6 +988,9 @@ const handleFileUpload = async (event) => {
   color: #94a3b8;
   margin-bottom: 15px;
   border-bottom: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .member-area ul {
@@ -969,6 +1022,63 @@ const handleFileUpload = async (event) => {
   background: #4ade80;
   border-radius: 50%;
   margin-right: 10px;
+}
+
+/* [選用] 美化捲軸 (Chrome/Safari/Edge) */
+.member-area::-webkit-scrollbar {
+  width: 6px;
+}
+.member-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+.member-area::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 3px;
+}
+/* 在線標題的小綠點 (選擇性) */
+/* .status-title.online::before {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  background: #4ade80;
+  border-radius: 50%;
+} */
+
+/* 離線標題的小灰點 (選擇性) */
+/* .status-title.offline::before {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  background: #94a3b8; /* 灰色 */
+  /* border-radius: 50%; */
+/* } */
+
+/* 共用的列表樣式 */
+.member-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* 離線成員列表的樣式 */
+.offline-list li {
+  color: #94a3b8; /* 文字變淡 */
+}
+
+/* 覆寫原本 li::before 的綠點 */
+/* 針對「離線列表」下的 li，把前面的點改成空心或灰色 */
+.offline-list li::before {
+  background: transparent; /* 變成透明背景 */
+  border: 2px solid #cbd5e1; /* 加上灰色邊框 = 空心圓 */
+  box-sizing: border-box;
+}
+
+/* 滑鼠移過去離線成員的效果 */
+.offline-list li:hover {
+  background: #f1f5f9;
+  color: #64748b;
 }
 
 /* --- 輸入區域：懸浮膠囊風格 --- */
