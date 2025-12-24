@@ -173,23 +173,38 @@ class ConnectionManager:
 
     def get_member_list(self) -> List[str]:
         """取得所有成員的暱稱列表"""
-        return list(self.active_connections.values())
+        return list(set(self.active_connections.values()))
 
-    async def connect(self, websocket: WebSocket, nickname: str):
+    # [修改] 回傳值型態註解改為 bool (True=是取代舊連線, False=是新連線)
+    async def connect(self, websocket: WebSocket, nickname: str) -> bool:
         """接受一個新的 WebSocket 連線"""
         await websocket.accept()
-        # --- 檢查暱稱是否重複 ---
-        if nickname in self.active_connections.values():
-            # 代碼 4003 代表 "Forbidden" 或自定義錯誤
-            await websocket.close(code=4003, reason="Nickname taken")
-            return False  # 連線失敗
+
+        # [優化] 一行程式碼找出舊連線 (如果沒找到就回傳 None)
+        existing_socket = next((ws for ws, user in self.active_connections.items() if user == nickname), None)
+        
+        if existing_socket:
+            # 1. 先從清單刪除 (確保 disconnect 不會廣播離開)
+            del self.active_connections[existing_socket]
             
+            # 2. 關閉舊連線
+            try:
+                await existing_socket.close(code=4001, reason="Duplicate login")
+            except Exception:
+                pass # 忽略錯誤
+            
+            # 3. 加入新連線
+            self.active_connections[websocket] = nickname
+            return True # 回傳 True: 代表是「取代」舊連線
+            
+        # 如果沒有舊連線
         self.active_connections[websocket] = nickname
-        return True   # 連線成功
+        return False # 回傳 False: 代表是「全新」連線
 
     def disconnect(self, websocket: WebSocket) -> str:
         """斷開一個 WebSocket 連線"""
-        return self.active_connections.pop(websocket, "某人")
+        # [修改] 使用 pop 嘗試移除，如果 key 不存在 (代表已經在 connect 被踢掉了)，回傳 None
+        return self.active_connections.pop(websocket, None)
 
     async def broadcast(self, payload: dict):
         """
@@ -420,19 +435,26 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
         return
 
     # 2. 嘗試連線
-    success = await manager.connect(websocket, username)
-    if not success:
-        return # 這裡可能是重複登入
+    # [核心修改] 接收回傳值：is_replaced (是否為取代舊連線)
+    is_replaced = await manager.connect(websocket, username)
 
     # 連線成功後，傳送歷史訊息
     history = get_recent_messages()
     # 我們定義一個新的類型 'history'
     await websocket.send_text(json.dumps({"type": "history", "messages": history}))
-    
-    # 廣播加入訊息
-    await manager.broadcast({"type": "system", "message": f"{username} 加入了聊天室"})
+
+    # [核心修改] 只有在「不是」取代舊連線的情況下，才廣播加入訊息
+    if not is_replaced:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 存入資料庫
+        message_queue.put_nowait(("系統", f"{username} 加入了聊天室", timestamp, "system"))
+        
+        # 廣播
+        await manager.broadcast({"type": "system", "message": f"{username} 加入了聊天室"})
+    # 無論是新連線還是取代舊連線，都廣播最新的成員名單
     await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
-    
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -445,7 +467,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     raise ValueError("Parsed JSON is not a dictionary")
 
                 msg_type = parsed.get("type")
-                timestamp = datetime.now().strftime("%H:%M")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 if msg_type == "image":
                     # [修改重點在此]
@@ -504,7 +526,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
             # [修改] 除了 JSONDecodeError，也要捕捉 ValueError (我們剛剛手動引發的) 或 AttributeError
             except (json.JSONDecodeError, ValueError, AttributeError) as e:
                 # 錯誤處理
-                timestamp = datetime.now().strftime("%H:%M")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 # 這裡將 data (原始字串) 當作純文字訊息儲存
                 message_queue.put_nowait((username, data, timestamp, "text"))
                 await manager.broadcast({
@@ -515,10 +537,19 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                 })
             
     except WebSocketDisconnect:
-        nickname_left = manager.disconnect(websocket)
-        # 廣播離開訊息
-        await manager.broadcast({"type": "system", "message": f"{nickname_left} 離開了聊天室"})
-        await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
+        nickname_left = manager.disconnect(websocket) # 斷線處理
+
+        # 只有當 disconnect 回傳有值時，才代表是「使用者自己斷線/關閉網頁」
+        # 如果回傳 None，代表它是「被踢掉的舊連線」，我們就不廣播離開訊息
+        if nickname_left:
+            # 處理離開訊息
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 存入資料庫
+            message_queue.put_nowait(("系統", f"{nickname_left} 離開了聊天室", timestamp, "system"))
+
+            # 廣播離開訊息
+            await manager.broadcast({"type": "system", "message": f"{nickname_left} 離開了聊天室"})
+            await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
 
 # 允許在 Python 腳本中直接執行
 if __name__ == "__main__":

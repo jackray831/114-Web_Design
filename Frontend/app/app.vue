@@ -35,20 +35,20 @@
         <div class="chat-area">
           <ul ref="messagesContainer" class="messages-list">
             <li 
-              v-for="(msg, index) in messages" 
+              v-for="(msg, index) in processedMessages" 
               :key="index"
               :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === currentUser }"
             >
               <div v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
                 <span class="msg-text" v-html="linkify(msg.message)"></span>
-                <span class="msg-time">{{ msg.time }}</span>
+                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
               </div>
 
               <div v-else-if="msg.type === 'image'" class="msg-content">
                 <span class="msg-sender">{{ msg.nickname }}</span>
                  <ImageZoom :src="getFullImageUrl(msg.imageData)" alt="圖片訊息" />
-                <span class="msg-time">{{ msg.time }}</span>
+                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
               </div>
               
               <div v-else-if="msg.type === 'video'" class="msg-content">
@@ -58,7 +58,7 @@
                   controls 
                   style="max-width: 300px; border-radius: 8px; margin-top: 5px;" 
                 />
-                <span class="msg-time">{{ msg.time }}</span>
+                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
               </div>
 
               <div v-else-if="msg.type === 'file'" class="msg-content">
@@ -66,7 +66,7 @@
                 <a :href="getFullImageUrl(msg.imageData)" download target="_blank" class="chat-link">
                   {{ msg.filename || '檔案下載' }}
                 </a>
-                <span class="msg-time">{{ msg.time }}</span>
+                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
               </div>
 
               <span v-else>
@@ -270,6 +270,70 @@ const chatInputRef = ref(null)
 let ws = null
 const API_URL = 'http://localhost:8000' // 後端 API 位址
 
+// 1. 日期格式化函式 (處理 今天/昨天/星期幾)
+const formatSystemDate = (dateStr) => {
+  if (!dateStr || dateStr.length < 10) return dateStr 
+
+  const date = new Date(dateStr)
+  const now = new Date()
+  
+  // 只比較日期部分 (設為當天 00:00:00)
+  const targetDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+
+  const weekDays = ['日', '一', '二', '三', '四', '五', '六']
+  const weekDayStr = weekDays[date.getDay()]
+
+  // 判斷邏輯
+  if (targetDate.getTime() === today.getTime()) {
+    return '今天'
+  }
+  if (targetDate.getTime() === yesterday.getTime()) {
+    return '昨天'
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日(${weekDayStr})`
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekDayStr})`
+}
+
+// 2. 時間切割函式 (只顯示 18:30)
+const getMessageTime = (fullTime) => {
+  if (fullTime && fullTime.includes(' ')) {
+    return fullTime.split(' ')[1].substring(0, 5) // 取 HH:MM
+  }
+  return fullTime
+}
+
+// 3. [核心修改] 加工後的訊息列表
+// 這會自動在換日時插入一個 "type: system" 的訊息
+const processedMessages = computed(() => {
+  const result = []
+  let lastDate = ''
+
+  messages.value.forEach(msg => {
+    // 取得日期部分 (YYYY-MM-DD)
+    const currentDate = msg.time ? msg.time.split(' ')[0] : ''
+
+    // 如果日期跟上一條不一樣，就插入一個 "假的" 系統訊息
+    if (currentDate && currentDate !== lastDate && currentDate.includes('-')) {
+      result.push({
+        type: 'system',               // 直接用系統訊息類型
+        message: formatSystemDate(msg.time), // 內容就是格式化後的日期
+        nickname: '',                 // 系統訊息不需要暱稱
+        time: ''                      // 系統訊息不需要時間
+      })
+      lastDate = currentDate
+    }
+
+    result.push(msg)
+  })
+
+  return result
+})
+
 // --- [新增] 計算離線成員 (所有成員 - 在線成員) ---
 // 這裡的 members 是 WebSocket 傳來的「在線名單」
 const offlineMembers = computed(() => {
@@ -384,10 +448,17 @@ const connectWebSocket = () => {
   ws.onclose = (event) => {
     // 若不是主動登出 (isJoined 為 true 代表是被動斷線)
     if (isJoined.value) {
+      // [新增] 處理被踢下線的情況
+      if (event.code === 4001) {
+        alert("您的帳號已在其他裝置登入，本機連線已中斷。")
+        logout() // 自動呼叫登出清理畫面
+        return   // 結束，不執行下面的邏輯
+      }
+
       if (event.code === 4003) {
-        alert("驗證失敗或重複登入")
+        alert("驗證失敗，請重新登入。")
       } else if (event.code !== 1000) {
-        console.log("連線中斷")
+        console.log("連線異常中斷")
       }
     }
     
