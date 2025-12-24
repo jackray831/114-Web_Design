@@ -123,7 +123,7 @@
 
     <Transition name="pop" appear>
       <div v-if="!isJoined" class="login-overlay" @click="triggerBounce">
-        <div class="login-box" :class="{ 'bounce-active': isBouncing }" @click.stop>
+        <div class="login-box" :class="{ 'bounce-active': isBouncing }" v-shake="errorMessage" @click.stop>
           <Transition 
             :name="isRegisterMode ? 'slide-left' : 'slide-right'" 
             mode="out-in"
@@ -140,6 +140,7 @@
                   placeholder="帳號 (Username)" 
                   required 
                   class="input-field"
+                  @input="errorMessage = ''"
                 />
                 
                 <input 
@@ -148,6 +149,7 @@
                   placeholder="密碼 (Password)" 
                   required 
                   class="input-field"
+                  @input="errorMessage = ''"
                 />
 
                 <input 
@@ -157,6 +159,7 @@
                   placeholder="請再次輸入密碼" 
                   required 
                   class="input-field"
+                  @input="errorMessage = ''"
                 />
                 
                 <button type="submit" class="btn" :disabled="isLoading">
@@ -179,7 +182,7 @@
 
     <Transition name="pop" appear>
       <div v-if="isChangePasswordOpen" class="login-overlay" @click="triggerBounce">
-        <div class="login-box" :class="{ 'bounce-active': isBouncing }" @click.stop>
+        <div class="login-box" :class="{ 'bounce-active': isBouncing }" v-shake="errorMessage" @click.stop>
           <div style="position: relative;">
             <h2>更改密碼</h2>
             <button @click="closeChangePassword" class="close-btn">✕</button>
@@ -193,6 +196,7 @@
               placeholder="舊密碼" 
               required 
               class="input-field"
+              @input="errorMessage = ''"
             />
             
             <input 
@@ -201,6 +205,7 @@
               placeholder="新密碼 (至少8碼含英數)" 
               required 
               class="input-field"
+              @input="errorMessage = ''"
             />
 
             <input 
@@ -209,6 +214,7 @@
               placeholder="確認新密碼" 
               required 
               class="input-field"
+              @input="errorMessage = ''"
             />
             
             <button type="submit" class="btn" :disabled="isLoading">{{ isLoading ? '處理中...' : '確認修改' }}</button>
@@ -291,11 +297,6 @@ const handleAuth = async () => {
   try {
     if (isRegisterMode.value) {
       // === 註冊流程 ===
-
-      // [新增] 前端先簡單檢查一下，提升使用者體驗
-      if (form.password !== form.confirmPassword) {
-        throw new Error("兩次密碼輸入不一致")
-      }
       
       // 準備要傳給後端的資料 (需包含 confirm_password)
       const registerPayload = {
@@ -432,16 +433,22 @@ const triggerBounce = () => {
   }, 300)
 }
 
+const vShake = (el, binding) => {
+  // 只有當：
+  // 1. 有錯誤訊息 (binding.value 為真)
+  // 2. 且 錯誤訊息跟上次不一樣 (binding.value !== binding.oldValue)
+  // 才會觸發搖動
+  if (binding.value && binding.value !== binding.oldValue) {
+    el.classList.remove('shake-active')
+    void el.offsetWidth
+    el.classList.add('shake-active')
+  }
+}
+
 // [新增] 送出更改密碼請求
 const submitChangePassword = async () => {
   if (isLoading.value) return // 防止重複提交
   errorMessage.value = ''
-  
-  if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
-    errorMessage.value = "兩次新密碼輸入不一致"
-    return
-  }
-
   isLoading.value = true
   try {
     const res = await fetch(`${API_URL}/change-password`, {
@@ -659,19 +666,27 @@ const handleFileUpload = async (event) => {
   color: white; /* 確保文字顏色 */
   font-weight: bold; /* 加粗 */
   box-shadow: 0 4px 6px -1px rgba(74, 222, 128, 0.4);
-  transition: transform 0.1s, box-shadow 0.1s;
   border: none;
   cursor: pointer;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;
+}
+
+.login-box .btn:hover {
+  background: #22c55e;
+  box-shadow: 0 4px 6px -1px rgba(74, 222, 128, 0.4);
 }
 
 .login-box .btn:active {
   transform: scale(0.98); /* 點擊時微縮 */
+  box-shadow: 0 2px 4px -1px rgba(74, 222, 128, 0.4);
 }
 
 .login-box .btn:disabled {
-  background: #a7f3d0;
+  background: #bdc3c7;
+  color: #ffffff; /* 保持文字顏色，或者稍微變灰 */
   cursor: not-allowed;
   transform: scale(1);
+  box-shadow: none;
 }
 
 /* [新增] 切換模式連結樣式 */
@@ -1109,7 +1124,7 @@ const handleFileUpload = async (event) => {
 }
 
 /* .btn { padding: 10px 20px; background: #4ade80; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; } */
-.btn:hover { background: #22c55e; }
+/* .btn:hover { background: #22c55e; } */
 
 /* 傳送按鈕：圓形或圓角 */
 .send-btn {
@@ -1207,6 +1222,9 @@ const handleFileUpload = async (event) => {
   opacity: 1;
   transform: scale(1) translateY(0);
 }
+.shake-active {
+  animation: shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
 @keyframes bounce {
   0% { transform: scale(1); }
   40% { transform: scale(1.02); } /* 稍微放大 */
@@ -1224,6 +1242,12 @@ const handleFileUpload = async (event) => {
 @keyframes menuFadeIn {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+@keyframes shake {
+  10%, 90% { transform: translate3d(-1px, 0, 0); }
+  20%, 80% { transform: translate3d(2px, 0, 0); }
+  30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+  40%, 60% { transform: translate3d(4px, 0, 0); }
 }
 
 /* RWD - 當螢幕寬度小於 768px (手機/平板直向) */
