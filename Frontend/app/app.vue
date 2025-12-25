@@ -34,9 +34,23 @@
       <div class="main-area">
         <div class="chat-area">
           <ul ref="messagesContainer" class="messages-list">
+
+            <div 
+              v-if="messages.length >= 300 && !historyEndReached" 
+              style="text-align: center; margin: 15px 0;"
+            >
+              <button 
+                @click="loadMoreHistory"
+                class="load-more-btn"
+                :disabled="isLoadingHistory"
+              >
+                {{ isLoadingHistory ? '載入中...' : '載入更早的訊息' }}
+              </button>
+            </div>
+
             <li 
               v-for="(msg, index) in processedMessages" 
-              :key="index"
+              :key="msg.id || index"
               :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === currentUser }"
             >
               <div v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-content">
@@ -238,6 +252,8 @@ const isRegisterMode = ref(false) // 控制現在是 "登入" 還是 "註冊" �
 const isChangePasswordOpen = ref(false)
 const isBouncing = ref(false)
 const isLoading = ref(false)
+const isLoadingHistory = ref(false)
+const historyEndReached = ref(false)
 const errorMessage = ref('')
 const showMenu = ref(false)
 
@@ -349,6 +365,46 @@ const fetchAllUsers = async () => {
     }
   } catch (err) {
     console.error("無法取得成員列表", err)
+  }
+}
+
+// [新增] 載入更多歷史訊息的函式
+const loadMoreHistory = async () => {
+  isLoadingHistory.value = true
+  
+  try {
+    // 1. 計算目前已經顯示多少筆 (這就是我們要 skip 的數量)
+    // 注意：我們要扣除掉前端自己產生的日期分隔線 (type: 'system')
+    // 但為了簡單起見，直接用 messages.value.length (原始資料長度) 最準確
+    const currentCount = messages.value.length
+    const limit = 100
+    
+    // 2. 呼叫後端 API
+    const res = await fetch(`${API_URL}/history/more?skip=${currentCount}&limit=${limit}`)
+    const newOldMessages = await res.json()
+    
+    if (newOldMessages.length < limit) {
+      historyEndReached.value = true
+    }
+
+    if (newOldMessages.length === 0) {
+      return // 沒有更多訊息了
+    }
+
+    const container = messagesContainer.value
+    const prevHeight = container.scrollHeight
+    
+    // 4. 把新抓到的舊訊息合併到陣列最前面
+    messages.value = [...newOldMessages, ...messages.value]
+    
+    // 5. [關鍵體驗優化] 修正捲軸位置，讓畫面停在原本閱讀的地方
+    await nextTick()
+    container.scrollTop = container.scrollHeight - prevHeight
+  } catch (err) {
+    console.error("載入失敗", err)
+    alert("無法載入歷史訊息")
+  } finally {
+    isLoadingHistory.value = false
   }
 }
 
@@ -1165,6 +1221,40 @@ const handleFileUpload = async (event) => {
 .offline-list li:hover {
   background: #f1f5f9;
   color: #64748b;
+}
+
+.load-more-btn {
+  /* 1. 拿掉邊框與陰影，改用非常淡的背景色 */
+  background-color: #f1f5f9; /* 非常淺的灰藍色 */
+  border: none;
+  box-shadow: none;
+  
+  /* 2. 文字顏色用深灰色，不要全黑 */
+  color: #94a3b8; 
+  
+  /* 3. 維持圓角與間距 */
+  padding: 6px 18px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+/* 滑鼠移上去時，才讓它稍微明顯一點 (像是在說：我可以按喔) */
+.load-more-btn:hover {
+  background-color: #e2e8f0; /* 背景稍微變深 */
+  color: #475569;            /* 文字變深 */
+}
+
+.load-more-btn:active {
+  background-color: #cbd5e1;
+}
+
+.load-more-btn:disabled {
+  background-color: transparent;
+  color: #cbd5e1;
+  cursor: wait;
 }
 
 /* --- 輸入區域：懸浮膠囊風格 --- */

@@ -124,12 +124,16 @@ def save_message(nickname, message, timestamp, msg_type="text"):
     conn.commit()
     conn.close()
 
-def get_recent_messages(limit=50):
+def get_recent_messages(limit=300, skip=0):
     """取得最近的歷史訊息"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # [修改] 讀取時也要抓 msg_type
-    c.execute("SELECT nickname, message, msg_type, timestamp FROM messages ORDER BY id DESC LIMIT ?", (limit,))
+
+    # [修改] SQL 語法加入 OFFSET
+    # 意思：抓最新的資料，但是跳過前 skip 筆，再抓 limit 筆
+    c.execute("SELECT nickname, message, msg_type, timestamp, id FROM messages ORDER BY id DESC LIMIT ? OFFSET ?",
+              (limit, skip)
+    )
     rows = c.fetchall()
     conn.close()
     
@@ -139,7 +143,8 @@ def get_recent_messages(limit=50):
         msg_data = {
             "nickname": row[0],
             "time": row[3],
-            "type": row[2]  # 從資料庫讀取型別 (text 或 image)
+            "type": row[2],  # 從資料庫讀取型別 (text 或 image)
+            "id": row[4] # 建議順便把 ID 也傳回去，未來如果要精確控制很有用
         }
         
         if row[2] == "image":
@@ -272,6 +277,12 @@ async def get_all_users():
     all_users = [row[0] for row in rows]
     
     return all_users
+
+# [新增] 載入更多歷史訊息 API
+@app.get("/history/more")
+async def get_more_history(skip: int = 0, limit: int = 50):
+    # 直接呼叫上面改好的函式
+    return get_recent_messages(limit, skip)
 
 # [修改] 註冊 API：改用 UserRegister 模型並加入驗證邏輯
 @app.post("/register")
