@@ -87,6 +87,7 @@
               placeholder="輸入訊息..." 
               class="input-field chat-textarea"
               :disabled="!isJoined" 
+              maxlength="500"
               @keydown="handleKeydown"
               @input="autoResize"
             ></textarea>
@@ -109,7 +110,7 @@
           <h3 class="status-title online">線上 ({{ members.length }})</h3>
           <ul class="member-list">
             <li v-for="(member, index) in members" :key="'on-'+index">
-              {{ member }}
+              <span class="member-name">{{ member }}</span>
             </li>
           </ul>
 
@@ -119,7 +120,7 @@
             </h3>
             <ul class="member-list offline-list">
               <li v-for="(member, index) in offlineMembers" :key="'off-'+index">
-                {{ member }}
+                <span class="member-name">{{ member }}</span>
               </li>
             </ul>
           </div>
@@ -146,6 +147,7 @@
                   placeholder="帳號 (Username)" 
                   required 
                   class="input-field"
+                  maxlength="16"
                   @input="errorMessage = ''"
                 />
                 
@@ -155,6 +157,7 @@
                   placeholder="密碼 (Password)" 
                   required 
                   class="input-field"
+                  maxlength="72"
                   @input="errorMessage = ''"
                 />
 
@@ -165,6 +168,7 @@
                   placeholder="請再次輸入密碼" 
                   required 
                   class="input-field"
+                  maxlength="72"
                   @input="errorMessage = ''"
                 />
                 
@@ -202,6 +206,7 @@
               placeholder="舊密碼" 
               required 
               class="input-field"
+              maxlength="72"
               @input="errorMessage = ''"
             />
             
@@ -211,6 +216,7 @@
               placeholder="新密碼 (至少8碼含英數)" 
               required 
               class="input-field"
+              maxlength="72"
               @input="errorMessage = ''"
             />
 
@@ -220,6 +226,7 @@
               placeholder="確認新密碼" 
               required 
               class="input-field"
+              maxlength="72"
               @input="errorMessage = ''"
             />
             
@@ -447,9 +454,19 @@ const handleAuth = async () => {
         body: JSON.stringify(registerPayload)
       })
 
+      // 這裡原本只有兩行，現在改成這樣 ---
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.detail || '註冊失敗')
+        
+        // 判斷 err.detail 是字串還是陣列
+        if (Array.isArray(err.detail)) {
+            // 如果是 Pydantic 的驗證錯誤 (陣列)，抓第一筆錯誤的 msg
+            // 例如: "String should have at most 20 characters"
+            throw new Error(err.detail[0].msg)
+        } else {
+            // 如果是一般錯誤 (字串)，例如 "此帳號已被註冊"
+            throw new Error(err.detail || '註冊失敗')
+        }
       }
 
       alert('註冊成功！請登入')
@@ -467,7 +484,9 @@ const handleAuth = async () => {
       })
 
       if (!res.ok) {
-        throw new Error('帳號或密碼錯誤')
+        // 登入通常是 401 錯誤，detail 都是字串，但也可用同樣邏輯保護
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || '帳號或密碼錯誤')
       }
 
       const data = await res.json()
@@ -700,6 +719,14 @@ const handleFileUpload = async (event) => {
   const file = event.target.files[0]
   if (!file) return
 
+  // [新增] 前端檢查檔案大小 (例如 5MB)
+  const MAX_SIZE = 5 * 1024 * 1024;
+  if (file.size > MAX_SIZE) {
+    alert(`檔案過大！請上傳小於 ${MAX_SIZE / (1024 * 1024)}MB 的檔案。`);
+    event.target.value = ''; // 清空選擇
+    return;
+  }
+
   const formData = new FormData()
   formData.append('file', file)
 
@@ -709,7 +736,11 @@ const handleFileUpload = async (event) => {
       body: formData
     })
 
-    if (!res.ok) throw new Error('檔案上傳失敗')
+    // [修改] 這裡要抓出後端回傳的錯誤訊息 (例如 "檔案過大...")
+    if (!res.ok) {
+      const errorData = await res.json();
+      throw new Error(errorData.detail || '檔案上傳失敗');
+    }
 
     const data = await res.json()
     const fileUrl = data.url
@@ -1029,6 +1060,12 @@ const handleFileUpload = async (event) => {
   border-radius: 20px;
   font-size: 0.85rem;
   font-weight: 600;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 /* 中間區域 */
@@ -1248,6 +1285,16 @@ const handleFileUpload = async (event) => {
   background: #4ade80;
   border-radius: 50%;
   margin-right: 10px;
+  flex-shrink: 0; /* [新增這行] 禁止圓點縮放 */
+}
+
+/* [新增] 針對暱稱文字的截斷設定 */
+.member-name {
+  white-space: nowrap;       /* 強制不換行 (這最重要，讓它維持單行) */
+  overflow: hidden;          /* 隱藏超出的部分 */
+  text-overflow: ellipsis;   /* 超出的部分變成 "..." */
+  min-width: 0;              /* [關鍵] 允許在 Flex 容器中縮小到比內容還小 */
+  flex: 1;                   /* 佔據剩餘空間 */
 }
 
 /* [選用] 美化捲軸 (Chrome/Safari/Edge) */

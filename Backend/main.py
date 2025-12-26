@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles # 用來提供靜態檔案存取
 from fastapi.concurrency import run_in_threadpool
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -26,8 +26,10 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# --- 定義檔案上傳目錄 ---
+# --- 定義檔案上傳目錄、最大檔案大小、最大訊息長度 ---
 UPLOAD_DIR = "static/uploads"
+MAX_FILE_SIZE = 5 * 1024 * 1024 # 5MB
+MAX_MSG_LENGTH = 500
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
@@ -48,7 +50,8 @@ def init_db():
                   nickname TEXT,
                   message TEXT,
                   msg_type TEXT,
-                  timestamp TEXT)''')
+                  timestamp TEXT,
+                  filename TEXT)''')
     
     # [新增] 建立使用者表 (username 是主鍵，不可重複)
     # 注意：password_hash 存的是加密後的字串，不是明碼
@@ -114,13 +117,13 @@ class Token(BaseModel):
     token_type: str
     username: str
 
-def save_message(nickname, message, timestamp, msg_type="text"):
+def save_message(nickname, message, timestamp, msg_type="text", filename=None):
     """儲存訊息 (支援文字與圖片)"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     # [修改] 插入時多存一個 msg_type
-    c.execute("INSERT INTO messages (nickname, message, msg_type, timestamp) VALUES (?, ?, ?, ?)",
-              (nickname, message, msg_type, timestamp))
+    c.execute("INSERT INTO messages (nickname, message, msg_type, timestamp, filename) VALUES (?, ?, ?, ?, ?)",
+              (nickname, message, msg_type, timestamp, filename))
     conn.commit()
     conn.close()
 
@@ -131,7 +134,7 @@ def get_recent_messages(limit=300, skip=0):
 
     # [修改] SQL 語法加入 OFFSET
     # 意思：抓最新的資料，但是跳過前 skip 筆，再抓 limit 筆
-    c.execute("SELECT nickname, message, msg_type, timestamp, id FROM messages ORDER BY id DESC LIMIT ? OFFSET ?",
+    c.execute("SELECT nickname, message, msg_type, timestamp, id, filename FROM messages ORDER BY id DESC LIMIT ? OFFSET ?",
               (limit, skip)
     )
     rows = c.fetchall()
@@ -151,10 +154,12 @@ def get_recent_messages(limit=300, skip=0):
             msg_data["imageData"] = row[1] # 如果是圖片，內容放在 imageData
         elif row[2] == "file":
             msg_data["imageData"] = row[1]
-            msg_data["filename"] = "附件"
+            # [修改] 優先使用資料庫存的檔名
+            msg_data["filename"] = row[5] if row[5] else "附件"
         elif row[2] == "video":
             msg_data["imageData"] = row[1]
-            msg_data["filename"] = "影片"
+            # [修改] 優先使用資料庫存的檔名
+            msg_data["filename"] = row[5] if row[5] else "影片"
         else:
             msg_data["message"] = row[1]   # 如果是文字，內容放在 message
             
@@ -235,11 +240,11 @@ async def db_writer_worker():
         # 從佇列拿出一個任務 (如果沒任務，這裡會自動等待，不佔資源)
         task = await message_queue.get()
         
-        nickname, message, timestamp, msg_type = task
+        nickname, message, timestamp, msg_type, filename = task
         
         # 這裡執行原本的寫入邏輯 (使用 run_in_threadpool 避免卡住工兵)
         try:
-            await run_in_threadpool(save_message, nickname, message, timestamp, msg_type)
+            await run_in_threadpool(save_message, nickname, message, timestamp, msg_type, filename)
         except Exception as e:
             print(f"背景寫入失敗: {e}")
         
@@ -291,14 +296,22 @@ async def register(user: UserRegister):
     if user.password != user.confirm_password:
         raise HTTPException(status_code=400, detail="兩次輸入的密碼不一致")
 
-    # 2. 檢查密碼複雜度 (例如：至少8碼，且包含英文與數字)
-    # ^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$ 是一個常見的正則表達式
+    # 2. 檢查帳號長度
+    if len(user.username) < 2 or len(user.username) > 16:
+        raise HTTPException(status_code=400, detail="帳號長度必須在 2 到 16 個字之間")
+
+    # 3. 檢查密碼長度
     if len(user.password) < 8:
         raise HTTPException(status_code=400, detail="密碼長度至少需要 8 個字元")
+    if len(user.password) > 72:
+        # 只有真的踩到這條線的人才會看到這個訊息
+        raise HTTPException(status_code=400, detail="密碼長度過長 (系統限制最多 72 字元)")
 
+    # 4. 密碼複雜度 (Regex 檢查)
     if not re.search(r"[A-Za-z]", user.password) or not re.search(r"\d", user.password):
         raise HTTPException(status_code=400, detail="密碼必須包含至少一個英文字母與一個數字")
 
+    # 5. 資料庫檢查
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
@@ -332,7 +345,7 @@ async def login_for_access_token(user_data: UserAuth):
     if not row or not verify_password(user_data.password, row[1]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="帳號或密碼錯誤",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -413,6 +426,17 @@ async def upload_file(file: UploadFile = File(...)):
         if filename_ext not in allowed_extensions:
             raise HTTPException(status_code=400, detail="不支援的檔案類型")
 
+        # [新增] 檢查檔案大小
+        # UploadFile 是 SpooledTemporaryFile，我們可以移到檔案尾端看大小
+        file.file.seek(0, 2) # 移到檔案最後面
+        file_size = file.file.tell() # 取得目前位置 (即檔案大小)
+        file.file.seek(0) # 記得移回檔案最前面，不然等下 read() 會讀不到東西！
+
+        if file_size > MAX_FILE_SIZE:
+            # 轉換成 MB 顯示錯誤訊息比較好讀
+            size_in_mb = MAX_FILE_SIZE / (1024 * 1024)
+            raise HTTPException(status_code=400, detail=f"檔案過大，限制為 {int(size_in_mb)}MB")
+
         # 產生亂碼檔名
         unique_filename = f"{uuid.uuid4()}.{filename_ext}"
         file_path = os.path.join(UPLOAD_DIR, unique_filename)
@@ -424,6 +448,8 @@ async def upload_file(file: UploadFile = File(...)):
 
         return {"url": f"/static/uploads/{unique_filename}"}
 
+    except HTTPException as he:
+        raise he # 如果是我們自己拋出的 HTTP 錯誤，直接往外丟
     except Exception as e:
         print(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail="檔案上傳失敗")
@@ -459,7 +485,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # 存入資料庫
-        message_queue.put_nowait(("系統", f"{username} 加入了聊天室", timestamp, "system"))
+        message_queue.put_nowait(("系統", f"{username} 加入了聊天室", timestamp, "system", None))
         
         # 廣播
         await manager.broadcast({"type": "system", "message": f"{username} 加入了聊天室"})
@@ -470,6 +496,16 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
         while True:
             data = await websocket.receive_text()
 
+            # --- [新增] 訊息長度檢查 ---
+            if len(data) > MAX_MSG_LENGTH:
+                # 選擇性：可以回傳一個系統訊息警告使用者
+                warning_msg = json.dumps({
+                    "type": "system", 
+                    "message": f"訊息過長 (超過 {MAX_MSG_LENGTH} 字)，傳送失敗。"
+                })
+                await websocket.send_text(warning_msg)
+                continue # 跳過這次迴圈，不處理這則訊息
+            # --------------------------
             try:
                 parsed = json.loads(data)
 
@@ -488,7 +524,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
 
                     if image_url:
                         # 丟進佇列 (Tuple 格式要跟 worker 對應)
-                        message_queue.put_nowait((username, image_url, timestamp, "image"))
+                        message_queue.put_nowait((username, image_url, timestamp, "image", None))
                         
                         # 2. 廣播給所有人 (包含傳送者)
                         await manager.broadcast({
@@ -502,7 +538,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     filename = parsed.get("filename", "附件")
 
                     if file_url:
-                        message_queue.put_nowait((username, file_url, timestamp, "file"))
+                        message_queue.put_nowait((username, file_url, timestamp, "file", filename))
                         await manager.broadcast({
                             "type": "file",
                             "nickname": username,
@@ -515,7 +551,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                     filename = parsed.get("filename", "影片")
 
                     if video_url:
-                        message_queue.put_nowait((username, video_url, timestamp, "video"))
+                        message_queue.put_nowait((username, video_url, timestamp, "video", filename))
                         await manager.broadcast({
                             "type": "video",
                             "nickname": username,
@@ -526,7 +562,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
 
                 else:
                     # 一般文字訊息
-                    message_queue.put_nowait((username, data, timestamp, "text"))
+                    message_queue.put_nowait((username, data, timestamp, "text", None))
                     await manager.broadcast({
                         "type": "chat",
                         "nickname": username,
@@ -539,7 +575,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                 # 錯誤處理
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 # 這裡將 data (原始字串) 當作純文字訊息儲存
-                message_queue.put_nowait((username, data, timestamp, "text"))
+                message_queue.put_nowait((username, data, timestamp, "text", None))
                 await manager.broadcast({
                     "type": "chat",
                     "nickname": username,
@@ -556,7 +592,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
             # 處理離開訊息
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # 存入資料庫
-            message_queue.put_nowait(("系統", f"{nickname_left} 離開了聊天室", timestamp, "system"))
+            message_queue.put_nowait(("系統", f"{nickname_left} 離開了聊天室", timestamp, "system", None))
 
             # 廣播離開訊息
             await manager.broadcast({"type": "system", "message": f"{nickname_left} 離開了聊天室"})
