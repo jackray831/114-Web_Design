@@ -51,53 +51,45 @@
             <li 
               v-for="(msg, index) in processedMessages" 
               :key="msg.id || index"
+              class="message-row" 
               :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === currentUser }"
             >
-              <div v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-content">
-                <span class="msg-sender">{{ msg.nickname }}</span>
-                <span class="msg-text" v-html="linkify(msg.message)"></span>
-                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
-              </div>
+              <span v-if="msg.type === 'system'">{{ msg.message }}</span>
 
-              <div v-else-if="msg.type === 'image'" class="msg-content">
-                <span class="msg-sender">{{ msg.nickname }}</span>
-                 <ImageZoom :src="getFullImageUrl(msg.imageData)" alt="圖片訊息" />
-                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
-              </div>
+              <template v-else>
+                
+                <div class="msg-content" :class="msg.type">
+                  
+                  <span v-if="msg.nickname !== currentUser" class="msg-sender">{{ msg.nickname }}</span>
+
+                  <span v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-text" v-html="linkify(msg.message)"></span>
+
+                  <ImageZoom v-else-if="msg.type === 'image'" :src="getFullImageUrl(msg.imageData)" alt="圖片訊息" class="media-content" />
+                  
+                  <video v-else-if="msg.type === 'video'" :src="getFullImageUrl(msg.imageData)" controls class="media-content" />
+
+                  <a v-else-if="msg.type === 'file'" :href="getFullImageUrl(msg.imageData)" download target="_blank" class="chat-link">
+                    {{ msg.filename || '檔案下載' }}
+                  </a>
+                </div>
+
+                <span class="msg-time-outside">{{ getMessageTime(msg.time) }}</span>
               
-              <div v-else-if="msg.type === 'video'" class="msg-content">
-                <span class="msg-sender">{{ msg.nickname }}</span>
-                <video 
-                  :src="getFullImageUrl(msg.imageData)" 
-                  controls 
-                  style="max-width: 300px; border-radius: 8px; margin-top: 5px;" 
-                />
-                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
-              </div>
-
-              <div v-else-if="msg.type === 'file'" class="msg-content">
-                <span class="msg-sender">{{ msg.nickname }}</span>
-                <a :href="getFullImageUrl(msg.imageData)" download target="_blank" class="chat-link">
-                  {{ msg.filename || '檔案下載' }}
-                </a>
-                <span class="msg-time">{{ getMessageTime(msg.time) }}</span>
-              </div>
-
-              <span v-else>
-                {{ msg.message }}
-              </span>
+              </template>
             </li>
           </ul>
           
           <form @submit.prevent="sendMessage" class="input-area">
-            <input 
+            <textarea 
               ref="chatInputRef"
               v-model="inputMessage" 
-              type="text" 
+              rows="1"
               placeholder="輸入訊息..." 
-              class="input-field"
+              class="input-field chat-textarea"
               :disabled="!isJoined" 
-            />
+              @keydown="handleKeydown"
+              @input="autoResize"
+            ></textarea>
             <button type="submit" class="btn send-btn" :disabled="!isJoined">傳送</button>
 
             <label class="btn upload-btn">
@@ -408,6 +400,30 @@ const loadMoreHistory = async () => {
   }
 }
 
+// [新增] 處理按鍵事件
+const handleKeydown = (e) => {
+  // 如果按的是 Enter，且沒有按 Shift -> 發送訊息
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault() // 阻止瀏覽器預設的「換行」行為
+    sendMessage()
+  }
+  // 如果是 Shift + Enter，瀏覽器會自己處理換行，我們不用管
+}
+
+// [新增] 輸入框自動長高 (Auto-resize)
+const autoResize = () => {
+  const el = chatInputRef.value
+  if (!el) return
+
+  // 1. 先把高度歸零 (為了計算縮小時的高度)
+  el.style.height = 'auto' 
+  
+  // 2. 設定為內容撐開的高度 (scrollHeight)，但限制最大高度 (例如 120px)
+  // 這裡 54 是因為預設單行加上 padding 大約的高度，確保不會縮得太小
+  const newHeight = Math.min(el.scrollHeight, 150) 
+  el.style.height = `${newHeight}px`
+}
+
 // --- [核心邏輯] 處理 註冊 或 登入 ---
 const handleAuth = async () => {
   if (isLoading.value) return // 防止重複提交
@@ -622,10 +638,17 @@ const logout = () => {
   showMenu.value = false
 }
 
-const sendMessage = () => {
+// [修改] 發送訊息函式 (增加重置高度的動作)
+const sendMessage = async () => {
   if (ws && ws.readyState === WebSocket.OPEN && inputMessage.value.trim()) {
     ws.send(inputMessage.value)
     inputMessage.value = ''
+    
+    // [新增] 發送完後，強制把輸入框縮回單行高度
+    await nextTick()
+    if (chatInputRef.value) {
+      chatInputRef.value.style.height = 'auto'
+    }
   }
 }
 
@@ -1036,49 +1059,101 @@ const handleFileUpload = async (event) => {
   gap: 15px; /* 訊息之間的間距 */
 }
 
-/* --- 訊息氣泡優化 (關鍵) --- */
+/* 1. 修改 li：變成透明容器，負責橫向排版 */
 .messages-list li {
-  max-width: 85%;
-  padding: 12px 16px;
-  border-radius: 18px; /* 更大的圓角 */
-  font-size: 1rem;
-  line-height: 1.5;
-  position: relative;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 輕微陰影代替邊框 */
-  width: fit-content;
-  margin: 0; /* reset */
+  /* margin-bottom: 5px; */
+  width: 100%;       /* 佔滿一行 */
+  display: flex;     /* 啟用 Flexbox */
+  align-items: flex-end; /* 讓時間沉底對齊 */
+  gap: 8px;          /* 氣泡跟時間的距離 */
+  
+  /* 移除原本的 padding, background, border-radius... */
+  padding: 0;
+  background: transparent !important; /* 強制移除背景色 */
+  box-shadow: none !important;
 }
 
-/* 對方的訊息：白底 + 陰影 */
 .messages-list li:not(.system-msg):not(.my-msg) {
-  background: white;
-  border-bottom-left-radius: 4px; /* 讓氣泡有個「尾巴」的感覺 */
-  color: #334155;
+  justify-content: flex-start; /* 靠左對齊 */
 }
 
 /* 我的訊息：漸層綠/藍 + 白字 */
 .messages-list li.my-msg {
-  align-self: flex-end;
-  /* 漂亮的漸層綠色，呼應你的登入按鈕 */
-  background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
-  color: white;
-  border-bottom-right-radius: 4px; /* 尾巴在右邊 */
-  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2); /* 綠色光暈 */
+  flex-direction: row-reverse;
+  justify-content: flex-start; /* 靠右對齊 */
 }
 
 /* 系統訊息：保持乾淨 */
 .messages-list li.system-msg {
-  align-self: center;
-  background: rgba(0,0,0,0.03);
-  color: #94a3b8;
-  font-size: 0.8rem;
-  padding: 5px 15px;
-  border-radius: 20px;
-  box-shadow: none;
+  justify-content: center !important; /* 強制置中，覆蓋原本的靠左/靠右 */
+  width: 100%;
+  /* margin: 0.5px 0; 上下間距 */
 }
 
-/* .msg-content { display: flex; flex-direction: column; } */
+/* [修復] 系統訊息內部的文字樣式 */
+/* 注意：因為結構改變，現在系統訊息的文字直接包在 li 下的 span 裡 */
+.messages-list li.system-msg > span {
+  background: rgba(0, 0, 0, 0.03); /* 淺灰色底 */
+  color: #94a3b8;                  /* 灰色字 */
+  font-size: 0.8rem;
+  padding: 4px 12px;
+  border-radius: 12px;
+  box-shadow: none;                /* 系統訊息不需要陰影 */
+}
 
+/* --- 4. 新增/修改 .msg-content (這才是真正的氣泡！) --- */
+.msg-content {
+  max-width: 75%;    /* 限制氣泡最大寬度，避免時間被擠不見 */
+  padding: 12px 16px;
+  border-radius: 18px;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+  word-break: break-word; /* 確保文字換行 */
+}
+
+/* 對方氣泡樣式 (搬家過來的) */
+.messages-list li:not(.system-msg):not(.my-msg) .msg-content {
+  background: white;
+  border-bottom-left-radius: 4px; /* 小尾巴 */
+  color: #334155;
+}
+
+/* 我方氣泡樣式 (搬家過來的) */
+.messages-list li.my-msg .msg-content {
+  background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
+  border-bottom-right-radius: 4px; /* 小尾巴 */
+  color: white;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2);
+}
+
+/* --- 5. 新增外部時間樣式 --- */
+.msg-time-outside {
+  font-size: 0.8rem;
+  color: #94a3b8; /* 淺灰色 */
+  margin-bottom: 2px; /* 稍微墊高一點點 */
+  flex-shrink: 0; /* 防止時間被擠壓換行 */
+  /* min-width: 35px; 保持最小寬度，避免太窄 */
+}
+
+/* 針對圖片和影片的氣泡容器，放寬寬度限制 */
+.msg-content.image, .msg-content.video {
+  max-width: 100%;       /* 允許它比文字氣泡更寬 (或設 85%) */
+  width: fit-content;    /* 內容多大就多大 (不超過父容器) */
+  padding: 0;            /* 移除留白，讓圖片滿版 */
+  background: transparent !important; /* 移除底色 */
+  box-shadow: none !important; /* 移除陰影 */
+  overflow: hidden;      /* 圓角才切得掉 */
+}
+/* 讓圖片/影片本身響應式縮放，但不要超過螢幕太寬 */
+.media-content {
+  display: block;        /* 消除圖片底部的微小縫隙 */
+  max-width: 100%;       /* 確保不超出氣泡範圍 */
+  max-height: 400px;     /* [建議] 限制最大高度，避免長圖洗版 */
+  object-fit: contain;   /* 保持比例 */
+  border-radius: 18px;   /* 圖片自己的圓角 */
+}
 /* 訊息內的文字細節 */
 .msg-sender {
   font-size: 0.75rem;
@@ -1090,6 +1165,15 @@ const handleFileUpload = async (event) => {
 .msg-text { 
   font-size: 1em;
   line-height: 1.4;
+  
+  /* 1. 保留使用者輸入的換行 (Enter鍵)，同時允許自動換行 */
+  white-space: pre-wrap; 
+  
+  /* 2. 讓長單字 (如長英文、連續符號) 強制換行，避免撐開版面 */
+  word-break: break-word; 
+  
+  /* 3. 現代瀏覽器標準寫法，確保在單字過長時切斷換行 */
+  overflow-wrap: break-word;
 }
 
 .msg-time {
@@ -1259,6 +1343,7 @@ const handleFileUpload = async (event) => {
 
 /* --- 輸入區域：懸浮膠囊風格 --- */
 .input-area {
+  align-items: flex-end;
   background: white;
   padding: 20px;
   border-top: 1px solid #f1f5f9;
@@ -1275,6 +1360,23 @@ const handleFileUpload = async (event) => {
   border-radius: 24px; /* 膠囊狀 */
   font-size: 0.95rem;
   transition: all 0.3s;
+}
+
+.input-field.chat-textarea {
+  font-family: inherit;
+
+  resize: none;         /* 隱藏右下角的拖拉控制 */
+  overflow-y: auto;     /* 內容太多時才顯示捲軸 */
+  min-height: 44px;     /* 設定最小高度，避免太扁 */
+  max-height: 150px;    /* 設定最大高度 */
+  line-height: 1.4;     /* 設定行高 */
+  
+  /* 為了美觀，調整一下 Padding */
+  padding: 10px 20px;   
+  
+  /* 讓垂直置中改為靠上，這樣多行時文字不會奇怪地浮在中間 */
+  display: flex;        
+  align-items: center;  /* 單行時置中，多行時自然向下 */
 }
 
 .input-field:focus {
