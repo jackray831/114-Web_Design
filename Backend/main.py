@@ -7,7 +7,7 @@ import re
 import uuid # 用來產生唯一檔名
 import asyncio
 from datetime import datetime, timedelta
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, status, Header, File, UploadFile
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, status, Header, File, UploadFile,Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles # 用來提供靜態檔案存取
 from fastapi.concurrency import run_in_threadpool
@@ -38,8 +38,15 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def init_db():
     """初始化資料庫"""
+
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+
+    # 先檢查 messages 表格是否已有 is_deleted 欄位
+    c.execute("PRAGMA table_info(messages)")
+    columns = [row[1] for row in c.fetchall()]
+    if "is_deleted" not in columns:
+        c.execute("ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0")
 
     # [新增] 開啟 WAL 模式 (關鍵！)
     c.execute("PRAGMA journal_mode=WAL;")
@@ -124,8 +131,10 @@ def save_message(nickname, message, timestamp, msg_type="text", filename=None):
     # [修改] 插入時多存一個 msg_type
     c.execute("INSERT INTO messages (nickname, message, msg_type, timestamp, filename) VALUES (?, ?, ?, ?, ?)",
               (nickname, message, msg_type, timestamp, filename))
+    message_id = c.lastrowid 
     conn.commit()
     conn.close()
+    return message_id  # <== 回傳給上層
 
 def get_recent_messages(limit=300, skip=0):
     """取得最近的歷史訊息"""
@@ -134,9 +143,14 @@ def get_recent_messages(limit=300, skip=0):
 
     # [修改] SQL 語法加入 OFFSET
     # 意思：抓最新的資料，但是跳過前 skip 筆，再抓 limit 筆
-    c.execute("SELECT nickname, message, msg_type, timestamp, id, filename FROM messages ORDER BY id DESC LIMIT ? OFFSET ?",
-              (limit, skip)
-    )
+    c.execute("""
+    SELECT nickname, message, msg_type, timestamp, id, is_deleted, filename
+    FROM messages
+    WHERE is_deleted = 0
+    ORDER BY id DESC
+    LIMIT ? OFFSET ?
+    """, (limit, skip))
+
     rows = c.fetchall()
     conn.close()
     
@@ -150,6 +164,8 @@ def get_recent_messages(limit=300, skip=0):
             "id": row[4] # 建議順便把 ID 也傳回去，未來如果要精確控制很有用
         }
         
+        msg_data["is_deleted"] = bool(row[6])  # row[6] 是 is_deleted 欄位
+
         if row[2] == "image":
             msg_data["imageData"] = row[1] # 如果是圖片，內容放在 imageData
         elif row[2] == "file":
@@ -244,7 +260,7 @@ async def db_writer_worker():
         
         # 這裡執行原本的寫入邏輯 (使用 run_in_threadpool 避免卡住工兵)
         try:
-            await run_in_threadpool(save_message, nickname, message, timestamp, msg_type, filename)
+            message_id = await run_in_threadpool(save_message, nickname, message, timestamp, msg_type, filename)
         except Exception as e:
             print(f"背景寫入失敗: {e}")
         
@@ -524,50 +540,54 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
 
                     if image_url:
                         # 丟進佇列 (Tuple 格式要跟 worker 對應)
-                        message_queue.put_nowait((username, image_url, timestamp, "image", None))
+                        message_id = save_message(username, image_url, timestamp, "image", None)
                         
                         # 2. 廣播給所有人 (包含傳送者)
                         await manager.broadcast({
                             "type": "image",
                             "nickname": username,
                             "imageData": image_url, # 這裡廣播網址
-                            "time": timestamp
+                            "time": timestamp,
+                            "id": message_id
                         })
                 elif msg_type == "file":
                     file_url = parsed.get("imageData")  # 雖然是檔案，但欄位仍用 imageData
                     filename = parsed.get("filename", "附件")
 
                     if file_url:
-                        message_queue.put_nowait((username, file_url, timestamp, "file", filename))
+                        message_id = save_message(username, file_url, timestamp, "file", filename)
                         await manager.broadcast({
                             "type": "file",
                             "nickname": username,
                             "imageData": file_url,
                             "filename": filename,
-                            "time": timestamp
+                            "time": timestamp,
+                            "id": message_id
                         })
                 elif msg_type == "video":
                     video_url = parsed.get("imageData")
                     filename = parsed.get("filename", "影片")
 
                     if video_url:
-                        message_queue.put_nowait((username, video_url, timestamp, "video", filename))
+                        message_id = save_message(username, video_url, timestamp, "video", filename)
                         await manager.broadcast({
                             "type": "video",
                             "nickname": username,
                             "imageData": video_url,
                             "filename": filename,
-                            "time": timestamp
+                            "time": timestamp,
+                            "id": message_id
                         })
 
                 else:
                     # 一般文字訊息
-                    message_queue.put_nowait((username, data, timestamp, "text", None))
+                    message_id = save_message(username, data, timestamp, "text", None)
                     await manager.broadcast({
                         "type": "chat",
                         "nickname": username,
                         "message": data,
-                        "time": timestamp
+                        "time": timestamp,
+                        "id": message_id  # 加入 id
                     })
 
             # [修改] 除了 JSONDecodeError，也要捕捉 ValueError (我們剛剛手動引發的) 或 AttributeError
@@ -575,12 +595,13 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
                 # 錯誤處理
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 # 這裡將 data (原始字串) 當作純文字訊息儲存
-                message_queue.put_nowait((username, data, timestamp, "text", None))
+                message_id = save_message(username, data, timestamp, "text", None)
                 await manager.broadcast({
                     "type": "chat",
                     "nickname": username,
                     "message": data,
-                    "time": timestamp
+                    "time": timestamp,
+                    "id": message_id  # 加入 id
                 })
             
     except WebSocketDisconnect:
@@ -597,6 +618,41 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
             # 廣播離開訊息
             await manager.broadcast({"type": "system", "message": f"{nickname_left} 離開了聊天室"})
             await manager.broadcast({"type": "member_list_update", "members": manager.get_member_list()})
+
+@app.post("/delete-message")
+async def delete_message(id: int, authorization: str = Header(None)):
+    # 1. 取出使用者
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="未登入或 Token 無效")
+
+    token = authorization.split(" ")[1]
+    username = get_current_user_from_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Token 無效或過期")
+
+    # 2. 查詢此訊息是否存在 + 是否屬於該使用者
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT nickname FROM messages WHERE id = ?", (id,))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="找不到該訊息")
+
+    if row[0] != username:
+        conn.close()
+        raise HTTPException(status_code=403, detail="只能刪除自己的訊息")
+
+    # 3. 更新 is_deleted 為 1
+    c.execute("UPDATE messages SET is_deleted = 1 WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    await manager.broadcast({
+        "type": "delete",
+        "id": id
+    })
+    return {"message": "刪除成功"}
 
 # 允許在 Python 腳本中直接執行
 if __name__ == "__main__":

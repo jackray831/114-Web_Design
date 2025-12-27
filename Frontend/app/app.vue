@@ -53,6 +53,7 @@
               :key="msg.id || index"
               class="message-row" 
               :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === currentUser }"
+              @contextmenu.prevent="onRightClickMessage($event, msg)" 
             >
               <span v-if="msg.type === 'system'">{{ msg.message }}</span>
 
@@ -62,7 +63,17 @@
                   
                   <span v-if="msg.nickname !== currentUser" class="msg-sender">{{ msg.nickname }}</span>
 
-                  <span v-if="msg.type === 'chat' || msg.type === 'text'" class="msg-text" v-html="linkify(msg.message)"></span>
+                  <span 
+                    v-if="(msg.type === 'chat' || msg.type === 'text') && !msg.is_deleted" 
+                    class="msg-text" 
+                    v-html="linkify(msg.message)">
+                  </span>
+                  <span 
+                    v-else-if="msg.is_deleted" 
+                    class="msg-text" 
+                    style="color: #9ca3af; font-style: italic;">
+                    此訊息已被刪除
+                  </span>
 
                   <ImageZoom v-else-if="msg.type === 'image'" :src="getFullImageUrl(msg.imageData)" alt="圖片訊息" class="media-content" />
                   
@@ -506,6 +517,40 @@ const handleAuth = async () => {
     isLoading.value = false
   }
 }
+const onRightClickMessage = (event, msg) => {
+  // 只允許刪除自己發送的訊息
+  if (msg.nickname !== currentUser.value || msg.type === 'system') return
+
+  if (confirm("確定要刪除這則訊息嗎？")) {
+    deleteMessage(msg.id)
+  }
+}
+
+const deleteMessage = async (msgId) => {
+  try {
+    const res = await fetch(`${API_URL}/delete-message?id=${msgId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token.value}`
+      }
+    })
+
+    if (!res.ok) {
+      const err = await res.json()
+      alert("刪除失敗：" + err.detail)
+      return
+    }
+
+    // 刪除成功，更新前端畫面中的該則訊息
+    const target = messages.value.find(m => m.id === msgId)
+    if (target) {
+      target.message = null
+      target.is_deleted = true
+    }
+  } catch (err) {
+    alert("無法連線後端：" + err.message)
+  }
+}
 
 // --- WebSocket 連線 ---
 const connectWebSocket = () => {
@@ -533,6 +578,13 @@ const connectWebSocket = () => {
     else if (data.type === 'member_list_update') {
       members.value = data.members
       fetchAllUsers() // 更新所有成員列表
+    }
+    else if (data.type === 'delete') {
+      const deleted = messages.value.find(m => m.id === data.id)
+      if (deleted) {
+        deleted.message = null
+        deleted.is_deleted = true
+      }
     }
   }
 
