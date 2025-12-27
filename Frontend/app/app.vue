@@ -1,7 +1,21 @@
 <template>
   <div class="container">
     
-    <div class="chat-ui" :class="{ 'blurred': !isJoined || isChangePasswordOpen }">
+    <div class="chat-ui" :class="{ 'blurred': !isJoined || isChangePasswordOpen }"
+      @dragenter.prevent="isDragging = true"
+      @dragover.prevent="isDragging = true"
+      @dragleave.prevent="isDragging = false"
+      @drop.prevent="handleDrop"
+    >
+      <Transition name="fade">
+        <div v-if="isDragging && isJoined" class="drag-overlay">
+          <div class="drag-content">
+            <span class="drag-icon">📂</span>
+            <h3>釋放檔案以開始上傳</h3>
+          </div>
+        </div>
+      </Transition>
+
       <div class="header">
         <h1>聊天室</h1>
         
@@ -58,6 +72,12 @@
               <span v-if="msg.type === 'system'">{{ msg.message }}</span>
 
               <template v-else>
+                <img 
+                  v-if="msg.nickname !== currentUser"
+                  :src="`https://api.dicebear.com/9.x/dylan/svg?seed=${msg.nickname}`"
+                  class="avatar"
+                  alt="avatar"
+                />
                 
                 <div class="msg-content" :class="msg.type">
                   
@@ -108,7 +128,7 @@
               ＋
               <input 
                 type="file" 
-                accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx,.zip,.rar,.mp4,.webm"  
+                accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx,.zip,.rar,.mp4,.webm,.heic"
                 @change="handleFileUpload" 
                 style="display: none;" 
                 :disabled="!isJoined"
@@ -121,6 +141,10 @@
           <h3 class="status-title online">線上 ({{ members.length }})</h3>
           <ul class="member-list">
             <li v-for="(member, index) in members" :key="'on-'+index">
+              <img 
+                :src="`https://api.dicebear.com/9.x/dylan/svg?seed=${member}`" 
+                class="avatar-small"
+              />
               <span class="member-name">{{ member }}</span>
             </li>
           </ul>
@@ -131,6 +155,10 @@
             </h3>
             <ul class="member-list offline-list">
               <li v-for="(member, index) in offlineMembers" :key="'off-'+index">
+                <img 
+                  :src="`https://api.dicebear.com/9.x/dylan/svg?seed=${member}`" 
+                  class="avatar-small grayscale" 
+                />
                 <span class="member-name">{{ member }}</span>
               </li>
             </ul>
@@ -263,6 +291,7 @@ const isChangePasswordOpen = ref(false)
 const isBouncing = ref(false)
 const isLoading = ref(false)
 const isLoadingHistory = ref(false)
+const isDragging = ref(false)
 const historyEndReached = ref(false)
 const errorMessage = ref('')
 const showMenu = ref(false)
@@ -766,16 +795,14 @@ const getFullImageUrl = (path) => {
   return `${API_URL}${path}`
 }
 
-// [修改] 上傳檔案並發送訊息
-const handleFileUpload = async (event) => {
-  const file = event.target.files[0]
+// [新增] 共用的上傳核心邏輯 (抽離出來，讓拖曳跟按鈕都能用)
+const uploadFileCore = async (file) => {
   if (!file) return
 
-  // [新增] 前端檢查檔案大小 (例如 5MB)
-  const MAX_SIZE = 5 * 1024 * 1024;
+  // 1. 檢查大小 (沿用之前的邏輯)
+  const MAX_SIZE = 5 * 1024 * 1024; // 5MB
   if (file.size > MAX_SIZE) {
     alert(`檔案過大！請上傳小於 ${MAX_SIZE / (1024 * 1024)}MB 的檔案。`);
-    event.target.value = ''; // 清空選擇
     return;
   }
 
@@ -788,7 +815,6 @@ const handleFileUpload = async (event) => {
       body: formData
     })
 
-    // [修改] 這裡要抓出後端回傳的錯誤訊息 (例如 "檔案過大...")
     if (!res.ok) {
       const errorData = await res.json();
       throw new Error(errorData.detail || '檔案上傳失敗');
@@ -796,26 +822,38 @@ const handleFileUpload = async (event) => {
 
     const data = await res.json()
     const fileUrl = data.url
-
-    // 根據副檔名判斷是否為圖片或影片
     const isImage = file.type.startsWith('image/')
     const isVideo = file.type.startsWith('video/')
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: isImage ? 'image' : (isVideo ? 'video' : 'file'),
-        imageData: fileUrl,  // 後端統一回傳 /static/uploads/xxx.xxx
+        imageData: fileUrl,
         filename: file.name
       }))
     }
-
   } catch (err) {
     alert(err.message || '上傳失敗')
-  } finally {
-    event.target.value = ''
   }
 }
 
+// [修改] 原本的 handleFileUpload (按鈕觸發) 改得更精簡
+const handleFileUpload = async (event) => {
+  const file = event.target.files[0]
+  await uploadFileCore(file)
+  event.target.value = '' // 清空 input 避免重複選取無反應
+}
+
+// [新增] 處理拖曳放開 (Drop)
+const handleDrop = async (event) => {
+  isDragging.value = false // 隱藏遮罩
+  
+  const files = event.dataTransfer.files
+  if (files.length > 0) {
+    // 這裡只取第一個檔案，如果你想支援多檔上傳，可以用迴圈呼叫
+    await uploadFileCore(files[0])
+  }
+}
 </script>
 
 <style scoped>
@@ -1148,6 +1186,31 @@ const handleFileUpload = async (event) => {
   gap: 15px; /* 訊息之間的間距 */
 }
 
+/* 頭像樣式 */
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #eee;
+  margin-right: 8px; /* 跟氣泡的距離 */
+  flex-shrink: 0; /* 防止被擠壓 */
+}
+
+/* 成員列表的小頭像 */
+.avatar-small {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* 離線變灰階 */
+.grayscale {
+  filter: grayscale(100%);
+  opacity: 0.6;
+}
+
 /* 1. 修改 li：變成透明容器，負責橫向排版 */
 .messages-list li {
   /* margin-bottom: 5px; */
@@ -1233,7 +1296,12 @@ const handleFileUpload = async (event) => {
   padding: 0;            /* 移除留白，讓圖片滿版 */
   background: transparent !important; /* 移除底色 */
   box-shadow: none !important; /* 移除陰影 */
-  overflow: hidden;      /* 圓角才切得掉 */
+  /* overflow: hidden;      圓角才切得掉 */
+}
+.msg-content.image .msg-sender,
+.msg-content.video .msg-sender {
+  margin-left: 16px; 
+  margin-bottom: 8px;
 }
 /* 讓圖片/影片本身響應式縮放，但不要超過螢幕太寬 */
 .media-content {
@@ -1542,6 +1610,43 @@ const handleFileUpload = async (event) => {
   color: #475569;
 }
 
+/* [新增] 拖曳上傳遮罩樣式 */
+.drag-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.85); /* 半透明白底 */
+  backdrop-filter: blur(4px);            /* 模糊背景 */
+  z-index: 200;                          /* 確保蓋在所有內容上面 */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border: 4px dashed #4ade80;            /* 綠色虛線邊框 */
+  box-sizing: border-box;                /* 確保邊框算在寬度內 */
+  pointer-events: none;                  /* 關鍵：讓滑鼠事件能穿透遮罩觸發 drop */
+  border-radius: inherit; /* 自動繼承父層 (.chat-ui) 的圓角設定 */
+}
+
+.drag-content {
+  text-align: center;
+  color: #334155;
+  pointer-events: none;
+}
+
+.drag-icon {
+  font-size: 4rem;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.drag-content h3 {
+  font-size: 1.5rem;
+  margin: 0;
+  color: #10b981;
+}
+
 /* --- 動畫效果 --- */
 .slide-left-enter-active, .slide-left-leave-active,
 .slide-right-enter-active, .slide-right-leave-active {
@@ -1551,6 +1656,15 @@ const handleFileUpload = async (event) => {
 .slide-left-enter-from { opacity: 0; transform: translateX(50px); }
 .slide-right-leave-to { opacity: 0; transform: translateX(50px); }
 .slide-right-enter-from { opacity: 0; transform: translateX(-50px); }
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
 
 .pop-enter-active,
 .pop-leave-active {

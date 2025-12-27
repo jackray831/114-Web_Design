@@ -435,7 +435,7 @@ async def change_password(
 async def upload_file(file: UploadFile = File(...)):
     try:
         # 允許的副檔名類型
-        allowed_extensions = ["jpg", "jpeg", "png", "gif", "pdf", "doc", "docx", "zip", "rar","mp4", "webm"]
+        allowed_extensions = ["jpg", "jpeg", "png", "gif", "pdf", "doc", "docx", "zip", "rar","mp4", "webm", "heic"]
 
         # 取得副檔名
         filename_ext = file.filename.split(".")[-1].lower()
