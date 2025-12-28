@@ -276,6 +276,17 @@
         </div>
       </div>
     </Transition>
+    <Transition name="pop">
+      <div v-if="showDeleteDialog" class="login-overlay" @click="showDeleteDialog = false">
+        <div class="login-box bounce-active" @click.stop>
+          <h2 style="text-align: center;">確定刪除這則訊息嗎？</h2>
+          <div style="display: flex; justify-content: space-around; margin-top: 20px;">
+            <button class="btn" style="background: #ef4444;" @click="confirmDelete">刪除</button>
+            <button class="btn" @click="showDeleteDialog = false">取消</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
   </div>
 </template>
@@ -295,6 +306,8 @@ const isDragging = ref(false)
 const historyEndReached = ref(false)
 const errorMessage = ref('')
 const showMenu = ref(false)
+const showDeleteDialog = ref(false)
+const pendingDeleteMessageId = ref(null)
 
 // 表單資料 - 登入/註冊
 const form = reactive({
@@ -547,12 +560,16 @@ const handleAuth = async () => {
   }
 }
 const onRightClickMessage = (event, msg) => {
-  // 只允許刪除自己發送的訊息
   if (msg.nickname !== currentUser.value || msg.type === 'system') return
+  showDeleteDialog.value = true
+  pendingDeleteMessageId.value = msg.id
+}
 
-  if (confirm("確定要刪除這則訊息嗎？")) {
-    deleteMessage(msg.id)
-  }
+const confirmDelete = async () => {
+  if (!pendingDeleteMessageId.value) return
+  await deleteMessage(pendingDeleteMessageId.value)
+  showDeleteDialog.value = false
+  pendingDeleteMessageId.value = null
 }
 
 const deleteMessage = async (msgId) => {
