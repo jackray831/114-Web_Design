@@ -1,7 +1,7 @@
 <template>
   <div class="container">
     
-    <div class="chat-ui" :class="{ 'blurred': !isJoined || isChangePasswordOpen }"
+    <div class="chat-ui" :class="{ 'blurred': !isJoined || isChangePasswordOpen || showDeleteDialog }"
       @dragenter.prevent="isDragging = true"
       @dragover.prevent="isDragging = true"
       @dragleave.prevent="isDragging = false"
@@ -67,7 +67,7 @@
               :key="msg.id || index"
               class="message-row" 
               :class="{ 'system-msg': msg.type === 'system', 'my-msg': msg.nickname === currentUser }"
-              @contextmenu.prevent="onRightClickMessage($event, msg)" 
+              @contextmenu="handleContextMenu($event, msg)"
             >
               <span v-if="msg.type === 'system'">{{ msg.message }}</span>
 
@@ -278,12 +278,37 @@
     </Transition>
     <Transition name="pop">
       <div v-if="showDeleteDialog" class="login-overlay" @click="showDeleteDialog = false">
-        <div class="login-box bounce-active" @click.stop>
-          <h2 style="text-align: center;">確定刪除這則訊息嗎？</h2>
-          <div style="display: flex; justify-content: space-around; margin-top: 20px;">
-            <button class="btn" style="background: #ef4444;" @click="confirmDelete">刪除</button>
-            <button class="btn" @click="showDeleteDialog = false">取消</button>
+        <div class="login-box delete-modal" :class="{ 'bounce-active': isBouncing }" @click.stop>
+
+          <div class="modal-header">
+            <h2>刪除訊息</h2>
           </div>
+
+          <div class="modal-body">
+            <p>確定要永久刪除這則訊息嗎？</p>
+
+            <div v-if="pendingDeleteMessage" class="delete-preview">
+            <span v-if="pendingDeleteMessage.type === 'text' || pendingDeleteMessage.type === 'chat'">
+              {{ pendingDeleteMessage.message }}
+            </span>
+            <span v-else-if="pendingDeleteMessage.type === 'image'">[圖片訊息]</span>
+            <span v-else-if="pendingDeleteMessage.type === 'video'">[影片訊息]</span>
+            <span v-else-if="pendingDeleteMessage.type === 'file'">[檔案] {{ pendingDeleteMessage.filename }}</span>
+          </div>
+
+          <p>此動作無法復原</p>
+
+            <div class="modal-actions">
+              <button class="btn btn-secondary" @click="showDeleteDialog = false">
+                取消
+              </button>
+              
+              <button class="btn btn-danger" @click="confirmDeleteMessage">
+                確認刪除
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
     </Transition>
@@ -307,7 +332,7 @@ const historyEndReached = ref(false)
 const errorMessage = ref('')
 const showMenu = ref(false)
 const showDeleteDialog = ref(false)
-const pendingDeleteMessageId = ref(null)
+const pendingDeleteMessage = ref(null)
 
 // 表單資料 - 登入/註冊
 const form = reactive({
@@ -559,17 +584,30 @@ const handleAuth = async () => {
     isLoading.value = false
   }
 }
-const onRightClickMessage = (event, msg) => {
-  if (msg.nickname !== currentUser.value || msg.type === 'system') return
-  showDeleteDialog.value = true
-  pendingDeleteMessageId.value = msg.id
-}
+// const onRightClickMessage = (event, msg) => {
+//   if (msg.nickname !== currentUser.value || msg.type === 'system') return
+//   showDeleteDialog.value = true
+//   pendingDeleteMessageId.value = msg.id
+// }
 
-const confirmDelete = async () => {
-  if (!pendingDeleteMessageId.value) return
-  await deleteMessage(pendingDeleteMessageId.value)
+const handleContextMenu = (event, msg) => {
+  // 1. 檢查是否按住了 Ctrl 鍵
+  // (Mac 使用者通常習慣 Command 鍵，如果您想同時支援 Mac，可以寫: event.ctrlKey || event.metaKey)
+  if (event.ctrlKey) {
+    // 2. 基本防呆：只有自己的訊息 && 非系統訊息
+    if (msg.nickname === currentUser.value && msg.type !== 'system') {
+      // [關鍵] 只有在符合條件時，才阻止瀏覽器預設選單
+      event.preventDefault() 
+      showDeleteDialog.value = true
+      pendingDeleteMessage.value = msg
+    }
+  }
+}
+const confirmDeleteMessage = async () => {
+  if (!pendingDeleteMessage.value) return
+  await deleteMessage(pendingDeleteMessage.value.id)
   showDeleteDialog.value = false
-  pendingDeleteMessageId.value = null
+  pendingDeleteMessage.value = null
 }
 
 const deleteMessage = async (msgId) => {
@@ -1662,6 +1700,81 @@ const handleDrop = async (event) => {
   font-size: 1.5rem;
   margin: 0;
   color: #10b981;
+}
+
+/* --- 刪除確認視窗專用樣式 --- */
+
+.delete-preview {
+  background-color: #f1f5f9; /* 淺灰背景 */
+  border-left: 4px solid #ef4444; /* 左邊紅線 */
+  padding: 10px;
+  margin: 15px 0;
+  text-align: center; /* 讓文字靠左，比較好閱讀 */
+  color: #334155;
+  font-size: 0.9rem;
+  border-radius: 4px;
+  
+  /* 防止文字太長爆版 */
+  max-height: 100px; 
+  overflow-y: auto;
+  word-break: break-all;
+}
+
+/* 微調視窗寬度，不要像登入框那麼寬 */
+.delete-modal {
+  max-width: 320px;
+  text-align: center;
+}
+
+/* 復用 header 風格，但稍微調整一下 */
+.modal-header h2 {
+  margin: 0;
+  padding: 15px;
+  font-size: 1.1rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  color: #334155;
+}
+
+.modal-body {
+  padding: 25px 20px;
+}
+
+.modal-body p {
+  margin: 0 0 20px 0;
+  color: #64748b;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+/* 按鈕容器：使用 Grid 或 Flex 讓按鈕並排且等寬 */
+.modal-actions {
+  display: flex;
+  gap: 12px; /* 按鈕之間的間距 */
+}
+
+/* --- 延伸按鈕樣式 --- */
+
+/* 危險按鈕 (紅色) */
+.btn-danger {
+  background: #ef4444 !important; /* 強制覆蓋原本的綠色 */
+  box-shadow: 0 4px 6px -1px rgba(239, 68, 68, 0.4) !important;
+}
+.btn-danger:hover {
+  background: #dc2626 !important;
+}
+
+/* 次要按鈕 (灰色/取消用) */
+.btn-secondary {
+  background: white !important;
+  color: #64748b !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: none !important;
+}
+.btn-secondary:hover {
+  background: #f1f5f9 !important;
+  color: #334155 !important;
+  border-color: #94a3b8 !important;
 }
 
 /* --- 動畫效果 --- */
