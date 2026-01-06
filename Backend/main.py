@@ -42,23 +42,18 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
-    # 先檢查 messages 表格是否已有 is_deleted 欄位
-    c.execute("PRAGMA table_info(messages)")
-    columns = [row[1] for row in c.fetchall()]
-    if "is_deleted" not in columns:
-        c.execute("ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0")
-
-    # [新增] 開啟 WAL 模式 (關鍵！)
+    # 1. 先開啟 WAL 模式
     c.execute("PRAGMA journal_mode=WAL;")
 
-    # [修改] 增加 msg_type 欄位，用來區分是 'text' 還是 'image'
+    # 2. [修正] 先建立資料表 (把所有需要的欄位一次建好)
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   nickname TEXT,
                   message TEXT,
                   msg_type TEXT,
                   timestamp TEXT,
-                  filename TEXT)''')
+                  filename TEXT,
+                  is_deleted INTEGER DEFAULT 0)''') # <--- 直接加在這裡
     
     # [新增] 建立使用者表 (username 是主鍵，不可重複)
     # 注意：password_hash 存的是加密後的字串，不是明碼
@@ -159,25 +154,26 @@ def get_recent_messages(limit=300, skip=0):
     for row in rows:
         msg_data = {
             "nickname": row[0],
+            "type": row[2],
             "time": row[3],
-            "type": row[2],  # 從資料庫讀取型別 (text 或 image)
-            "id": row[4] # 建議順便把 ID 也傳回去，未來如果要精確控制很有用
+            "id": row[4],
+            "is_deleted": bool(row[5]), # [修正] index 5 才是 is_deleted
+            "filename": row[6] if row[6] else None # [修正] index 6 才是 filename
         }
         
-        msg_data["is_deleted"] = bool(row[6])  # row[6] 是 is_deleted 欄位
+        # [修正重點] 這裡要同時允許 'text' 和 'system' 顯示 message 內容
+        if row[2] in ["text", "system"]:
+            msg_data["message"] = row[1]
 
-        if row[2] == "image":
-            msg_data["imageData"] = row[1] # 如果是圖片，內容放在 imageData
-        elif row[2] == "file":
-            msg_data["imageData"] = row[1]
-            # [修改] 優先使用資料庫存的檔名
-            msg_data["filename"] = row[5] if row[5] else "附件"
-        elif row[2] == "video":
-            msg_data["imageData"] = row[1]
-            # [修改] 優先使用資料庫存的檔名
-            msg_data["filename"] = row[5] if row[5] else "影片"
-        else:
-            msg_data["message"] = row[1]   # 如果是文字，內容放在 message
+        # 處理多媒體類型
+        elif row[2] in ["image", "file", "video"]:
+            msg_data["imageData"] = row[1] # 資料庫設計時把 URL 存在 message 欄位
+            
+            # 確保檔案和影片有預設檔名
+            if row[2] == "file" and not msg_data["filename"]:
+                msg_data["filename"] = "附件"
+            elif row[2] == "video" and not msg_data["filename"]:
+                msg_data["filename"] = "影片"
             
         history.append(msg_data)
 
