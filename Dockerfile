@@ -27,7 +27,7 @@ ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y sqlite3 && rm -rf /var/lib/apt/lists/*
 
 # 複製 requirements.txt 並安裝
-COPY requirements.txt .
+COPY Backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 1. 建立後端需要的資料夾
@@ -38,7 +38,7 @@ RUN mkdir -p static/uploads && mkdir -p frontend
 COPY --from=frontend-build /app-frontend/.output/public ./frontend
 
 # 3. 複製後端程式碼
-COPY main.py .
+COPY Backend/ .
 # 如果你有 .env.example 或其他 config 檔也要複製
 # COPY .env .  <-- 注意：Render 上通常是用環境變數設定，不建議複製真實的 .env
 
