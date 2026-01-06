@@ -4,11 +4,11 @@ FROM node:alpine as frontend-build
 WORKDIR /app-frontend
 
 # 複製 package.json
-COPY package*.json ./
+COPY Frontend/package*.json ./
 RUN npm install
 
 # 複製所有前端程式碼
-COPY . .
+COPY Frontend/ .
 
 # 執行 Nuxt 靜態生成 (這會產生 .output/public 資料夾)
 RUN npm run generate
