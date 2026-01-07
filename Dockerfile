@@ -23,8 +23,13 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# 安裝系統依賴 (SQLite 需要)
-RUN apt-get update && apt-get install -y sqlite3 && rm -rf /var/lib/apt/lists/*
+# [新增] 設定時區環境變數 (這行最重要！)
+ENV TZ=Asia/Taipei
+
+# [修改] 安裝 sqlite3 以及 tzdata (時區資料)
+RUN apt-get update && \
+    apt-get install -y sqlite3 tzdata && \
+    rm -rf /var/lib/apt/lists/*
 
 # 複製 requirements.txt 並安裝
 COPY Backend/requirements.txt .
